@@ -13,6 +13,10 @@ if (needsRelaunch) {
 } else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
+  // Chromium's GPU sandbox does not allow Mesa 26's /usr/lib/gbm/dri_gbm.so, so the
+  // GPU process logs "MESA-LOADER: ... Permission denied" before falling back. The
+  // app only loads its own local files, so running the GPU process unsandboxed is fine.
+  app.commandLine.appendSwitch('disable-gpu-sandbox');
   start();
 }
 
