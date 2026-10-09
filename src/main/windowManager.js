@@ -3,6 +3,7 @@ const { EventEmitter } = require('events');
 const path = require('path');
 const os = require('os');
 const pty = require('node-pty');
+const { save: saveConfig } = require('./config');
 
 class WindowManager extends EventEmitter {
   constructor(config) {
@@ -54,6 +55,7 @@ class WindowManager extends EventEmitter {
       fontSize: config.fontSize,
       background: config.background,
       foreground: config.foreground,
+      presenterMode: config.presenterMode,
     }));
   }
 
@@ -197,6 +199,15 @@ class WindowManager extends EventEmitter {
     if (term.moveMode) this.focus(id);
     this.#changed();
     return true;
+  }
+
+  setPresenterMode(enabled) {
+    this.config.presenterMode = Boolean(enabled);
+    saveConfig(this.config);
+    for (const term of this.terminals.values()) {
+      if (!term.win.isDestroyed()) term.win.webContents.send('presenterMode', this.config.presenterMode);
+    }
+    this.#changed();
   }
 
   focus(id) {

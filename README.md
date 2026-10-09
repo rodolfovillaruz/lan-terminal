@@ -20,6 +20,7 @@ The first window opens at (0,0), sized to the primary display (2560×1440 on a 2
 - open a new window
 - see the API addresses
 - copy the API token
+- turn presenter mode on or off
 - quit
 
 Closing every window does **not** quit the app. Use **Quit** from the tray. Typing `exit` in a shell closes that window. Launching the app a second time opens a new window in the instance that is already running.
@@ -37,6 +38,7 @@ On first run the app writes a config file to `~/.config/lan-terminal/config.json
 | `fontSize` | `16` | Font size |
 | `width` / `height` | `null` | Window size; `null` means the primary display's size |
 | `background` / `foreground` | `#000000` / `#e6e6e6` | Terminal colours |
+| `presenterMode` | `true` | Move mode shows only the move cursor (see below); also set from the tray |
 
 Restart the app after you edit this file.
 
@@ -66,6 +68,8 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/window
 ```
 
 **Move mode** puts a blue overlay over the window. Drag anywhere on it to move the window, including above the top of the screen. While the overlay is up, typing does not reach the shell. Press Esc or call `move-mode` with `{"enabled": false}` to turn it off.
+
+**Presenter mode** is on by default. It hides the blue overlay, outline and label, so nothing shows up in an OBS capture, and only the mouse cursor changes to the move cursor. Untick **Presenter mode** in the tray menu to get the visible overlay back. The setting is saved in the config file.
 
 The API is plain HTTP. Anyone on the LAN who has the token can open or close your terminals, so keep the token private. If you need a new token, delete the `token` line from the config file and restart.
 

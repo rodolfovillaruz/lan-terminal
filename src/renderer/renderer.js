@@ -38,6 +38,9 @@ async function main() {
   term.onTitleChange((title) => { document.title = title; });
 
   const overlay = document.getElementById('move-overlay');
+  // Presenter mode hides the overlay's tint, outline and label; only the cursor shows move mode.
+  overlay.classList.toggle('presenter', cfg.presenterMode);
+  window.terminal.onPresenterMode((enabled) => overlay.classList.toggle('presenter', enabled));
   window.terminal.onMoveMode((enabled) => {
     overlay.hidden = !enabled;
     if (!enabled) term.focus();

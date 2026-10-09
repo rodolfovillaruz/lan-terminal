@@ -35,6 +35,13 @@ function createTray(config, windows) {
         ...urls.map((u) => ({ label: `API: ${u}`, enabled: false })),
         { label: 'Copy API token', click: () => clipboard.writeText(config.token) },
         { type: 'separator' },
+        {
+          label: 'Presenter mode',
+          type: 'checkbox',
+          checked: config.presenterMode,
+          click: (item) => windows.setPresenterMode(item.checked),
+        },
+        { type: 'separator' },
         { label: 'Quit', click: () => app.quit() },
       ]),
     );

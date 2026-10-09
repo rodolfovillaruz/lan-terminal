@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('terminal', {
   resize: (cols, rows) => ipcRenderer.send('pty:resize', cols, rows),
   onData: (cb) => ipcRenderer.on('pty:data', (_e, data) => cb(data)),
   onMoveMode: (cb) => ipcRenderer.on('moveMode', (_e, enabled) => cb(enabled)),
+  onPresenterMode: (cb) => ipcRenderer.on('presenterMode', (_e, enabled) => cb(enabled)),
   exitMoveMode: () => ipcRenderer.send('moveMode:exit'),
   moveStart: () => ipcRenderer.send('move:start'),
   moveDrag: () => ipcRenderer.send('move:drag'),

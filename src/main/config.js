@@ -17,6 +17,7 @@ const DEFAULTS = {
   height: null, // null = primary display height
   background: '#000000',
   foreground: '#e6e6e6',
+  presenterMode: true, // move mode shows only the move cursor, no overlay or hint
 };
 
 function load() {
@@ -31,11 +32,13 @@ function load() {
   if (!config.token) config.token = crypto.randomBytes(24).toString('base64url');
 
   // Write back so new defaults and the generated token are visible to the user.
-  if (JSON.stringify(config) !== JSON.stringify(stored)) {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
-  }
+  if (JSON.stringify(config) !== JSON.stringify(stored)) save(config);
   return config;
 }
 
-module.exports = { load, CONFIG_PATH };
+function save(config) {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+}
+
+module.exports = { load, save, CONFIG_PATH };

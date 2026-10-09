@@ -54,6 +54,8 @@ html, body {
   justify-content: center;
 }
 #move-overlay[hidden] { display: none; }
+#move-overlay.presenter { background: none; outline: none; }
+#move-overlay.presenter .label { display: none; }
 #move-overlay .label {
   font: bold 32px 'JetBrainsMono NL NFM', monospace;
   color: #fff;
