@@ -1,0 +1,70 @@
+@font-face {
+  font-family: 'JetBrainsMono NL NFM';
+  src: url('../../assets/fonts/JetBrainsMonoNLNerdFontMono-Regular.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'JetBrainsMono NL NFM';
+  src: url('../../assets/fonts/JetBrainsMonoNLNerdFontMono-Bold.ttf') format('truetype');
+  font-weight: bold;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'JetBrainsMono NL NFM';
+  src: url('../../assets/fonts/JetBrainsMonoNLNerdFontMono-Italic.ttf') format('truetype');
+  font-weight: normal;
+  font-style: italic;
+}
+@font-face {
+  font-family: 'JetBrainsMono NL NFM';
+  src: url('../../assets/fonts/JetBrainsMonoNLNerdFontMono-BoldItalic.ttf') format('truetype');
+  font-weight: bold;
+  font-style: italic;
+}
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+
+#terminal {
+  position: absolute;
+  inset: 0;
+  padding: 6px;
+}
+
+/* No visible scrollbar in the captured image; scrollback still works with the wheel. */
+.xterm .xterm-viewport { scrollbar-width: none; }
+.xterm .xterm-viewport::-webkit-scrollbar { display: none; }
+
+#move-overlay {
+  position: absolute;
+  inset: 0;
+  -webkit-app-region: drag;
+  cursor: move;
+  background: rgba(30, 120, 255, 0.18);
+  outline: 4px dashed rgba(80, 160, 255, 0.9);
+  outline-offset: -4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#move-overlay[hidden] { display: none; }
+#move-overlay .label {
+  font: bold 32px 'JetBrainsMono NL NFM', monospace;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 16px 28px;
+  border-radius: 10px;
+  text-align: center;
+}
+#move-overlay .label span {
+  display: block;
+  font-size: 16px;
+  font-weight: normal;
+  opacity: 0.8;
+  margin-top: 6px;
+}
