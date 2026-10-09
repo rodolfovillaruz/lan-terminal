@@ -14,7 +14,7 @@ npm install   # downloads Electron and builds node-pty for it
 npm start
 ```
 
-The first window opens at (0,0), sized to the primary display. KDE shortens it so it stops at the top of the panel, so on a 2560×1440 screen with a bottom panel it comes out 2560×1394. A tray icon appears in the system tray. Right-click it to:
+The first window opens at (0,0), sized to the primary display (2560×1440 on a 2560×1440 screen). KDE shrinks new windows so they stop at the top of the panel, so the app sets the full size again right after the window appears, and the window covers the panel. A tray icon appears in the system tray. Right-click it to:
 
 - focus one of the open windows
 - open a new window

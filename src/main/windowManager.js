@@ -114,6 +114,9 @@ class WindowManager extends EventEmitter {
       this.#changed();
     });
     win.once('ready-to-show', () => win.show());
+    // KWin shrinks a new window to the work area (above the panel) when it is mapped.
+    // A resize after mapping is not clamped, so restore the full size once it is shown.
+    win.once('show', () => win.setBounds({ x: 0, y: 0, width, height }));
 
     win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
     this.#changed();
