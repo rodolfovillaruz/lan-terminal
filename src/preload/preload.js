@@ -8,4 +8,7 @@ contextBridge.exposeInMainWorld('terminal', {
   onData: (cb) => ipcRenderer.on('pty:data', (_e, data) => cb(data)),
   onMoveMode: (cb) => ipcRenderer.on('moveMode', (_e, enabled) => cb(enabled)),
   exitMoveMode: () => ipcRenderer.send('moveMode:exit'),
+  moveStart: () => ipcRenderer.send('move:start'),
+  moveDrag: () => ipcRenderer.send('move:drag'),
+  moveEnd: () => ipcRenderer.send('move:end'),
 });

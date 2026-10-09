@@ -49,6 +49,7 @@ function startApi(config, windows) {
     ['DELETE', /^\/windows\/(\d+)$/, (id) => windows.close(id)],
     ['POST', /^\/windows\/(\d+)\/close$/, (id) => windows.close(id)],
     ['POST', /^\/windows\/(\d+)\/reset-position$/, (id) => windows.resetPosition(id)],
+    ['POST', /^\/windows\/(\d+)\/position$/, (id, body) => windows.setPosition(id, body.x, body.y)],
     ['POST', /^\/windows\/(\d+)\/focus$/, (id) => windows.focus(id)],
     ['POST', /^\/windows\/(\d+)\/move-mode$/, (id, body) => windows.setMoveMode(id, body.enabled ?? true)],
   ];

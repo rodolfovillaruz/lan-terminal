@@ -49,6 +49,7 @@ Send `Authorization: Bearer <token>` on every request. You can also put `?token=
 | `GET /windows` | | List windows: `id, title, x, y, width, height, moveMode, focused, minimized, pid` |
 | `POST /windows` | | Open a new terminal window; returns `{id}` |
 | `POST /windows/:id/move-mode` | `{"enabled": true\|false}` | Turn move mode on or off |
+| `POST /windows/:id/position` | `{"x": 0, "y": -200}` | Move the window; negative values and positions past the screen edge are allowed |
 | `POST /windows/:id/reset-position` | | Move the window to x=0, y=0 |
 | `POST /windows/:id/focus` | | Bring the window to the front and focus it |
 | `DELETE /windows/:id` (or `POST /windows/:id/close`) | | Close the window and end its shell |
@@ -59,11 +60,12 @@ TOKEN=$(jq -r .token ~/.config/lan-terminal/config.json)
 curl -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/windows
 curl -X POST -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/windows
 curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"enabled":true}' http://192.168.1.10:8765/windows/1/move-mode
+curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"x":0,"y":-200}' http://192.168.1.10:8765/windows/1/position
 curl -X POST -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/windows/1/reset-position
 curl -X DELETE -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/windows/1
 ```
 
-**Move mode** puts a blue overlay over the window. Drag anywhere on it to move the window. While the overlay is up, typing does not reach the shell. Press Esc or call `move-mode` with `{"enabled": false}` to turn it off.
+**Move mode** puts a blue overlay over the window. Drag anywhere on it to move the window, including above the top of the screen. While the overlay is up, typing does not reach the shell. Press Esc or call `move-mode` with `{"enabled": false}` to turn it off.
 
 The API is plain HTTP. Anyone on the LAN who has the token can open or close your terminals, so keep the token private. If you need a new token, delete the `token` line from the config file and restart.
 

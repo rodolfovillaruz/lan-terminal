@@ -42,6 +42,25 @@ async function main() {
     overlay.hidden = !enabled;
     if (!enabled) term.focus();
   });
+  // The main process reads the cursor and moves the window; this only reports the drag.
+  let dragging = false;
+  overlay.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    dragging = true;
+    overlay.setPointerCapture(e.pointerId);
+    window.terminal.moveStart();
+  });
+  overlay.addEventListener('pointermove', () => {
+    if (dragging) window.terminal.moveDrag();
+  });
+  const endDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    window.terminal.moveEnd();
+  };
+  overlay.addEventListener('pointerup', endDrag);
+  overlay.addEventListener('pointercancel', endDrag);
+  overlay.addEventListener('lostpointercapture', endDrag);
   window.addEventListener('keydown', (e) => {
     if (!overlay.hidden && e.key === 'Escape') {
       window.terminal.exitMoveMode();

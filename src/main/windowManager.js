@@ -29,6 +29,27 @@ class WindowManager extends EventEmitter {
       const term = this.#fromSender(event);
       if (term) this.setMoveMode(term.id, false);
     });
+    // Move-mode drag. KWin's own window drag (app-region: drag) stops at the top edge,
+    // but it leaves positions the app sets alone, so follow the cursor here instead.
+    ipcMain.on('move:start', (event) => {
+      const term = this.#fromSender(event);
+      if (!term?.moveMode) return;
+      const [x, y] = term.win.getPosition();
+      term.drag = { cursor: screen.getCursorScreenPoint(), x, y };
+    });
+    ipcMain.on('move:drag', (event) => {
+      const term = this.#fromSender(event);
+      if (!term?.moveMode || !term.drag) return;
+      const { cursor, x, y } = term.drag;
+      const now = screen.getCursorScreenPoint();
+      term.win.setPosition(x + now.x - cursor.x, y + now.y - cursor.y);
+    });
+    ipcMain.on('move:end', (event) => {
+      const term = this.#fromSender(event);
+      if (!term?.drag) return;
+      term.drag = null;
+      this.#changed();
+    });
     ipcMain.handle('terminal:config', () => ({
       fontSize: config.fontSize,
       background: config.background,
@@ -155,9 +176,14 @@ class WindowManager extends EventEmitter {
   }
 
   resetPosition(id) {
+    return this.setPosition(id, 0, 0);
+  }
+
+  setPosition(id, x, y) {
     const term = this.get(id);
     if (!term) return false;
-    term.win.setPosition(0, 0);
+    if (!Number.isInteger(x) || !Number.isInteger(y)) throw new Error('x and y must be integers');
+    term.win.setPosition(x, y);
     this.#changed();
     return true;
   }
@@ -166,6 +192,7 @@ class WindowManager extends EventEmitter {
     const term = this.get(id);
     if (!term) return false;
     term.moveMode = Boolean(enabled);
+    term.drag = null;
     term.win.webContents.send('moveMode', term.moveMode);
     if (term.moveMode) this.focus(id);
     this.#changed();

@@ -43,7 +43,6 @@ html, body {
 #move-overlay {
   position: absolute;
   inset: 0;
-  -webkit-app-region: drag;
   cursor: move;
   background: rgba(30, 120, 255, 0.18);
   outline: 4px dashed rgba(80, 160, 255, 0.9);
