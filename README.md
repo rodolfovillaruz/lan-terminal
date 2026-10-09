@@ -14,7 +14,7 @@ npm install   # downloads Electron and builds node-pty for it
 npm start
 ```
 
-The first window opens at (0,0), sized to the primary display. A tray icon appears in the system tray. Right-click it to:
+The first window opens at (0,0), sized to the primary display. KDE shortens it so it stops at the top of the panel, so on a 2560×1440 screen with a bottom panel it comes out 2560×1394. A tray icon appears in the system tray. Right-click it to:
 
 - focus one of the open windows
 - open a new window
@@ -69,7 +69,7 @@ The API is plain HTTP. Anyone on the LAN who has the token can open or close you
 
 ## Wayland notes
 
-- The app runs through **XWayland** (`--ozone-platform=x11`, set in `src/main/main.js`). Native Wayland doesn't let an app place its own window or take focus, so "reset to 0,0" and tray focus would not work there. XWayland windows still show up in OBS's PipeWire window capture.
+- The app runs through **XWayland** (`--ozone-platform=x11`). Electron chooses its display backend before any app code runs, so the flag has to be on the command line: `npm start` passes it, and `src/main/main.js` relaunches itself with it if it was started without it. Without it the window opens blank. Native Wayland doesn't let an app place its own window or take focus, so "reset to 0,0" and tray focus would not work there. XWayland windows still show up in OBS's PipeWire window capture.
 - **Minimizing does not free memory.** Chromium only slows rendering for a minimized window, which saves CPU. The window's memory, about 100–200 MB, stays in use. The only way to free it is to close the window, either from the API or with `exit`.
 - Wayland lets an app minimize itself but not unminimize itself. Under XWayland, choosing the window from the tray menu, or calling `POST /windows/:id/focus`, brings it back.
 - OBS can't capture a minimized window on Wayland; it shows a frozen or black frame. Keep windows you're streaming unminimized.

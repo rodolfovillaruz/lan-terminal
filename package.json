@@ -5,7 +5,7 @@
   "main": "src/main/main.js",
   "private": true,
   "scripts": {
-    "start": "electron .",
+    "start": "electron --ozone-platform=x11 .",
     "postinstall": "node node_modules/electron/install.js && electron-rebuild -f -w node-pty"
   },
   "license": "MIT",
