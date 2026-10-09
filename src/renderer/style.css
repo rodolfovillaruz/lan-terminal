@@ -34,6 +34,8 @@ html, body {
   position: absolute;
   inset: 0;
   padding: 6px;
+  /* Keep xterm's z-indexed layers below the move overlay so it gets the pointer. */
+  isolation: isolate;
 }
 
 /* No visible scrollbar in the captured image; scrollback still works with the wheel. */
