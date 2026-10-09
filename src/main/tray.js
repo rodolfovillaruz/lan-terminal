@@ -17,7 +17,7 @@ function createTray(config, windows) {
   const build = (list = windows.list()) => {
     const windowItems = list.length
       ? list.map((w) => ({
-          label: `Terminal ${w.id} — ${w.title}`,
+          label: w.title === w.process ? w.process : `${w.process} — ${w.title}`,
           type: 'radio',
           checked: w.focused,
           click: () => windows.focus(w.id),

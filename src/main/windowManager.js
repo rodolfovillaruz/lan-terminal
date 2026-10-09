@@ -2,6 +2,7 @@ const { BrowserWindow, ipcMain, screen } = require('electron');
 const { EventEmitter } = require('events');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const pty = require('node-pty');
 const { save: saveConfig } = require('./config');
 
@@ -9,8 +10,24 @@ class WindowManager extends EventEmitter {
   constructor(config) {
     super();
     this.config = config;
-    this.terminals = new Map(); // id -> { id, win, pty, title, moveMode }
-    this.nextId = 1;
+    this.terminals = new Map(); // id (UUID) -> { id, win, pty, title, process, moveMode }
+
+    // Label each window with its foreground process (bash, vim, claude, ...).
+    setInterval(() => {
+      let changed = false;
+      for (const term of this.terminals.values()) {
+        try {
+          const name = path.basename(term.pty.process);
+          if (name && name !== term.process) {
+            term.process = name;
+            changed = true;
+          }
+        } catch {
+          // The pty can close between ticks.
+        }
+      }
+      if (changed) this.#changed();
+    }, 1000);
 
     // Renderer -> PTY. The sender identifies which terminal the message belongs to.
     ipcMain.on('pty:input', (event, data) => this.#fromSender(event)?.pty.write(data));
@@ -71,7 +88,7 @@ class WindowManager extends EventEmitter {
   }
 
   create() {
-    const id = this.nextId++;
+    const id = crypto.randomUUID();
     const { width: dw, height: dh } = screen.getPrimaryDisplay().bounds;
     const width = this.config.width || dw;
     const height = this.config.height || dh;
@@ -88,7 +105,7 @@ class WindowManager extends EventEmitter {
       fullscreenable: false,
       closable: true, // closable programmatically; there is no close button to click
       backgroundColor: this.config.background,
-      title: `Terminal ${id}`,
+      title: 'LAN Terminal',
       show: false,
       webPreferences: {
         preload: path.join(__dirname, '..', 'preload', 'preload.js'),
@@ -108,7 +125,7 @@ class WindowManager extends EventEmitter {
       env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
     });
 
-    const term = { id, win, pty: proc, title: path.basename(shell), moveMode: false, ready: false, pending: '' };
+    const term = { id, win, pty: proc, title: path.basename(shell), process: path.basename(shell), moveMode: false, ready: false, pending: '' };
     this.terminals.set(id, term);
 
     proc.onData((data) => {
@@ -147,7 +164,7 @@ class WindowManager extends EventEmitter {
   }
 
   get(id) {
-    return this.terminals.get(Number(id)) || null;
+    return this.terminals.get(String(id)) || null;
   }
 
   list() {
@@ -158,6 +175,7 @@ class WindowManager extends EventEmitter {
         return {
           id: t.id,
           title: t.title,
+          process: t.process,
           x: b.x,
           y: b.y,
           width: b.width,

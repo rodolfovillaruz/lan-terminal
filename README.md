@@ -44,12 +44,14 @@ Restart the app after you edit this file.
 
 ## API
 
+Each window has a UUID `id`. Windows are labelled by `process`, the command running in the foreground (`bash`, `vim`, `claude`, …), so two windows can share a label. `title` is the title the shell sets, or the shell's name. Every OS window is titled `LAN Terminal`, so OBS captures don't break when the process changes.
+
 Send `Authorization: Bearer <token>` on every request. You can also put `?token=<token>` in the URL.
 
 | Method & path | Body | Action |
 |---|---|---|
-| `GET /windows` | | List windows: `id, title, x, y, width, height, moveMode, focused, minimized, pid` |
-| `POST /windows` | | Open a new terminal window; returns `{id}` |
+| `GET /windows` | | List windows: `id, title, process, x, y, width, height, moveMode, focused, minimized, pid` |
+| `POST /windows` | | Open a new terminal window; returns `{id}` (a UUID) |
 | `POST /windows/:id/move-mode` | `{"enabled": true\|false}` | Turn move mode on or off |
 | `POST /windows/:id/position` | `{"x": 0, "y": -200}` | Move the window; negative values and positions past the screen edge are allowed |
 | `POST /windows/:id/reset-position` | | Move the window to x=0, y=0 |
@@ -60,11 +62,11 @@ Send `Authorization: Bearer <token>` on every request. You can also put `?token=
 ```sh
 TOKEN=$(jq -r .token ~/.config/lan-terminal/config.json)
 curl -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/windows
-curl -X POST -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/windows
-curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"enabled":true}' http://192.168.1.10:8765/windows/1/move-mode
-curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"x":0,"y":-200}' http://192.168.1.10:8765/windows/1/position
-curl -X POST -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/windows/1/reset-position
-curl -X DELETE -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/windows/1
+ID=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/windows | jq -r .id)
+curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"enabled":true}' http://192.168.1.10:8765/windows/$ID/move-mode
+curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"x":0,"y":-200}' http://192.168.1.10:8765/windows/$ID/position
+curl -X POST -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/windows/$ID/reset-position
+curl -X DELETE -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/windows/$ID
 ```
 
 **Move mode** puts a blue overlay over the window. Drag anywhere on it to move the window, including above the top of the screen. While the overlay is up, typing does not reach the shell. Press Esc or call `move-mode` with `{"enabled": false}` to turn it off.

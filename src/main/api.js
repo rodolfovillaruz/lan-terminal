@@ -46,12 +46,12 @@ function startApi(config, windows) {
   const routes = [
     ['GET', /^\/windows$/, () => [200, windows.list()]],
     ['POST', /^\/windows$/, () => [201, { id: windows.create() }]],
-    ['DELETE', /^\/windows\/(\d+)$/, (id) => windows.close(id)],
-    ['POST', /^\/windows\/(\d+)\/close$/, (id) => windows.close(id)],
-    ['POST', /^\/windows\/(\d+)\/reset-position$/, (id) => windows.resetPosition(id)],
-    ['POST', /^\/windows\/(\d+)\/position$/, (id, body) => windows.setPosition(id, body.x, body.y)],
-    ['POST', /^\/windows\/(\d+)\/focus$/, (id) => windows.focus(id)],
-    ['POST', /^\/windows\/(\d+)\/move-mode$/, (id, body) => windows.setMoveMode(id, body.enabled ?? true)],
+    ['DELETE', /^\/windows\/([0-9a-f-]{36})$/, (id) => windows.close(id)],
+    ['POST', /^\/windows\/([0-9a-f-]{36})\/close$/, (id) => windows.close(id)],
+    ['POST', /^\/windows\/([0-9a-f-]{36})\/reset-position$/, (id) => windows.resetPosition(id)],
+    ['POST', /^\/windows\/([0-9a-f-]{36})\/position$/, (id, body) => windows.setPosition(id, body.x, body.y)],
+    ['POST', /^\/windows\/([0-9a-f-]{36})\/focus$/, (id) => windows.focus(id)],
+    ['POST', /^\/windows\/([0-9a-f-]{36})\/move-mode$/, (id, body) => windows.setMoveMode(id, body.enabled ?? true)],
   ];
 
   const server = http.createServer(async (req, res) => {
