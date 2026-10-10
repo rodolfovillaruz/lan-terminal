@@ -10,7 +10,7 @@ class WindowManager extends EventEmitter {
   constructor(config) {
     super();
     this.config = config;
-    this.terminals = new Map(); // id (UUID) -> { id, win, pty, title, process, moveMode }
+    this.terminals = new Map(); // id (UUID) -> { id, win, pty, title, process, moveMode, alwaysOnTop }
 
     // Label each window with its foreground process (bash, vim, claude, ...).
     setInterval(() => {
@@ -126,7 +126,7 @@ class WindowManager extends EventEmitter {
       env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
     });
 
-    const term = { id, win, pty: proc, title: path.basename(shell), process: path.basename(shell), moveMode: false, ready: false, pending: '' };
+    const term = { id, win, pty: proc, title: path.basename(shell), process: path.basename(shell), moveMode: false, alwaysOnTop: false, ready: false, pending: '' };
     this.terminals.set(id, term);
 
     proc.onData((data) => {
@@ -182,6 +182,7 @@ class WindowManager extends EventEmitter {
           width: b.width,
           height: b.height,
           moveMode: t.moveMode,
+          alwaysOnTop: t.alwaysOnTop,
           focused: t.win.isFocused(),
           minimized: t.win.isMinimized(),
           pid: t.pty.pid,
@@ -216,6 +217,18 @@ class WindowManager extends EventEmitter {
     term.drag = null;
     term.win.webContents.send('moveMode', term.moveMode);
     if (term.moveMode) this.focus(id);
+    this.#changed();
+    return true;
+  }
+
+  // Keep-above puts the window over KDE's panel; skip-taskbar drops its taskbar and Alt+Tab entry.
+  setAlwaysOnTop(id, enabled) {
+    const term = this.get(id);
+    if (!term) return false;
+    term.alwaysOnTop = Boolean(enabled);
+    term.win.setAlwaysOnTop(term.alwaysOnTop);
+    term.win.setSkipTaskbar(term.alwaysOnTop);
+    if (term.alwaysOnTop) this.focus(id);
     this.#changed();
     return true;
   }
