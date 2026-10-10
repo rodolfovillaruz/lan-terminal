@@ -99,6 +99,7 @@ class WindowManager extends EventEmitter {
       width,
       height,
       frame: false,
+      roundedCorners: false,
       resizable: false,
       maximizable: false,
       minimizable: true,
