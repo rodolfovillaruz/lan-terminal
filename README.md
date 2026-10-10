@@ -25,6 +25,24 @@ The first window opens at (0,0), sized to the primary display (2560×1440 on a 2
 
 Closing every window does **not** quit the app. Use **Quit** from the tray. Typing `exit` in a shell closes that window. Launching the app a second time opens a new window in the instance that is already running.
 
+## Run as a service
+
+`lan-terminal.service` is a systemd user unit that starts the app when you log in to the desktop and stops it when you log out. It restarts the app if it crashes, but not after **Quit** from the tray.
+
+```sh
+systemctl --user link /opt/lan-terminal/lan-terminal.service
+systemctl --user enable --now lan-terminal
+```
+
+The unit assumes the repo lives at `/opt/lan-terminal`; edit the paths if it doesn't. Useful commands:
+
+```sh
+systemctl --user status lan-terminal
+systemctl --user restart lan-terminal   # after editing config.json
+systemctl --user disable --now lan-terminal
+journalctl --user -u lan-terminal -f
+```
+
 ## Config
 
 On first run the app writes a config file to `~/.config/lan-terminal/config.json`:
