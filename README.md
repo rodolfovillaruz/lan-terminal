@@ -68,9 +68,10 @@ Send `Authorization: Bearer <token>` on every request. You can also put `?token=
 
 | Method & path | Body | Action |
 |---|---|---|
-| `GET /windows` | | List windows: `id, title, process, x, y, width, height, moveMode, focused, minimized, pid` |
+| `GET /windows` | | List windows: `id, title, process, x, y, width, height, moveMode, fullscreen, focused, minimized, pid` |
 | `POST /windows` | | Open a new terminal window; returns `{id}` (a UUID) |
 | `POST /windows/:id/move-mode` | `{"enabled": true\|false}` | Turn move mode on or off |
+| `POST /windows/:id/fullscreen` | `{"enabled": true\|false}` | Turn fullscreen on or off; turning it off restores the window's previous size and position |
 | `POST /windows/:id/position` | `{"x": 0, "y": -200}` | Move the window; negative values and positions past the screen edge are allowed |
 | `POST /windows/:id/reset-position` | | Move the window to x=0, y=0 |
 | `POST /windows/:id/focus` | | Bring the window to the front and focus it |

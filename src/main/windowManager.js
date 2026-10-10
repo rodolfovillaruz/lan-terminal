@@ -10,7 +10,7 @@ class WindowManager extends EventEmitter {
   constructor(config) {
     super();
     this.config = config;
-    this.terminals = new Map(); // id (UUID) -> { id, win, pty, title, process, moveMode }
+    this.terminals = new Map(); // id (UUID) -> { id, win, pty, title, process, moveMode, restoreBounds }
 
     // Label each window with its foreground process (bash, vim, claude, ...).
     setInterval(() => {
@@ -103,7 +103,7 @@ class WindowManager extends EventEmitter {
       resizable: false,
       maximizable: false,
       minimizable: true,
-      fullscreenable: false,
+      fullscreenable: true,
       closable: true, // closable programmatically; there is no close button to click
       backgroundColor: this.config.background,
       title: 'LAN Terminal',
@@ -149,6 +149,14 @@ class WindowManager extends EventEmitter {
     });
     win.on('focus', () => this.#changed());
     win.on('moved', () => this.#changed());
+    win.on('enter-full-screen', () => this.#changed());
+    win.on('leave-full-screen', () => {
+      win.setResizable(false);
+      // KWin clamps the restored window to the work area, so put back the size it had.
+      if (term.restoreBounds) win.setBounds(term.restoreBounds);
+      term.restoreBounds = null;
+      this.#changed();
+    });
     win.on('closed', () => {
       if (!term.exited) proc.kill();
       this.terminals.delete(id);
@@ -182,6 +190,7 @@ class WindowManager extends EventEmitter {
           width: b.width,
           height: b.height,
           moveMode: t.moveMode,
+          fullscreen: t.win.isFullScreen(),
           focused: t.win.isFocused(),
           minimized: t.win.isMinimized(),
           pid: t.pty.pid,
@@ -217,6 +226,20 @@ class WindowManager extends EventEmitter {
     term.win.webContents.send('moveMode', term.moveMode);
     if (term.moveMode) this.focus(id);
     this.#changed();
+    return true;
+  }
+
+  setFullscreen(id, enabled) {
+    const term = this.get(id);
+    if (!term) return false;
+    const on = Boolean(enabled);
+    if (on === term.win.isFullScreen()) return true;
+    if (on) {
+      term.restoreBounds = term.win.getBounds();
+      // The window manager won't fullscreen a window with a fixed size.
+      term.win.setResizable(true);
+    }
+    term.win.setFullScreen(on);
     return true;
   }
 
