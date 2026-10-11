@@ -443,8 +443,10 @@ class WindowManager extends EventEmitter {
       term.activePane = layout.leaves(term.layout)[0];
     }
 
-    // A reload (e.g. renderer crash recovery) needs a fresh handshake.
-    win.webContents.on('did-start-loading', () => {
+    // A reload (e.g. renderer crash recovery) needs a fresh handshake. Only the page
+    // itself counts: a webtop's iframe loading must not stop layouts and output.
+    win.webContents.on('did-start-navigation', (details) => {
+      if (!details.isMainFrame || details.isSameDocument) return;
       term.ready = false;
       for (const pane of term.panes.values()) if (pane.pty) pane.ready = false;
     });
