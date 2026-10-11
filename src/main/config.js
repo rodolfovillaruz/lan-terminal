@@ -18,7 +18,7 @@ const DEFAULTS = {
   background: '#000000',
   foreground: '#e6e6e6',
   presenterMode: true, // move mode shows only the move cursor, no overlay or hint
-  tiling: null, // window tiling and each window's panes, saved from the layout planner
+  windows: null, // each window's pane split shape, restored on startup
 };
 
 function load() {
@@ -30,9 +30,15 @@ function load() {
   }
 
   const config = { ...DEFAULTS, ...stored };
-  // Older builds saved one window's pane shape as layout.
-  if (config.layout && !config.tiling) config.tiling = { panes: config.layout };
+  // Older builds saved one window's pane shape as layout, then a window tiling whose
+  // leaves held each window's panes.
+  if (!config.windows && config.tiling) {
+    const tiles = (s) => (s && 'panes' in s ? [s.panes] : (s?.children || []).flatMap(tiles));
+    config.windows = tiles(config.tiling);
+  }
+  if (!config.windows && config.layout) config.windows = [config.layout];
   delete config.layout;
+  delete config.tiling;
   if (!config.token) config.token = crypto.randomBytes(24).toString('base64url');
 
   // Write back so new defaults and the generated token are visible to the user.

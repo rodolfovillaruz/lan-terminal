@@ -56,13 +56,12 @@ main {
   padding: 16px 20px 20px;
 }
 
-/* A scaled copy of the capture window; planner.js sets its size from the aspect ratio. */
+/* One card per capture window; planner.js picks the columns and the card size. */
 #stage {
-  display: flex;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px;
+  display: grid;
+  gap: 16px;
+  justify-content: center;
+  align-content: center;
 }
 
 .split { display: flex; flex: 1 1 0; min-width: 0; min-height: 0; }
@@ -95,8 +94,6 @@ main {
   overflow: hidden;
 }
 .window.focused { border-color: var(--accent); }
-.window.drop { border-style: dashed; border-color: var(--accent); background: #142033; }
-.window.dragging, .window-head.dragging { opacity: 0.5; }
 .window-head {
   display: flex;
   align-items: center;
@@ -105,7 +102,6 @@ main {
   padding: 2px 4px 2px 8px;
   background: #22252b;
   border-bottom: 1px solid var(--border);
-  cursor: grab;
 }
 .window-head .name {
   flex: 1;
@@ -117,7 +113,7 @@ main {
   text-overflow: ellipsis;
 }
 .window-head .tools { display: flex; gap: 2px; }
-.window-body { flex: 1; display: flex; min-height: 0; padding: 4px; }
+.window-body { display: flex; min-height: 0; padding: 4px; background: var(--surface); }
 
 .pane {
   position: relative;
@@ -135,8 +131,23 @@ main {
   overflow: hidden;
 }
 .pane.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-.pane.drop { background: #1d2a3d; border-style: dashed; border-color: var(--accent); }
 .pane.dragging { opacity: 0.4; }
+
+/* Where a dragged pane will land: the highlighted half, or the whole pane to swap. */
+.pane .zone {
+  position: absolute;
+  inset: 0;
+  background: rgba(76, 155, 255, 0.28);
+  border: 2px solid var(--accent);
+  border-radius: 3px;
+  pointer-events: none;
+  display: none;
+}
+.pane[data-drop] .zone { display: block; }
+.pane[data-drop='left'] .zone { right: 50%; }
+.pane[data-drop='right'] .zone { left: 50%; }
+.pane[data-drop='top'] .zone { bottom: 50%; }
+.pane[data-drop='bottom'] .zone { top: 50%; }
 
 .pane .num { font: 600 22px 'JetBrainsMono NL NFM', monospace; }
 .pane .proc {

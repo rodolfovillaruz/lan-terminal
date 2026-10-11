@@ -37,7 +37,8 @@ function normalize(sizes) {
   }
 }
 
-function splitPane(tree, paneId, dir, newId) {
+// before puts the new pane left of (row) or above (col) paneId instead of after it.
+function splitPane(tree, paneId, dir, newId, before = false) {
   if (dir !== 'row' && dir !== 'col') throw new Error('dir must be row or col');
   // Same direction as the parent split: add a sibling instead of nesting another split.
   const parentDone = map(tree, (node) => {
@@ -45,16 +46,17 @@ function splitPane(tree, paneId, dir, newId) {
     const i = node.children.findIndex((c) => c.type === 'pane' && c.id === paneId);
     if (i < 0) return node;
     const half = node.sizes[i] / 2;
+    const at = before ? i : i + 1;
     return {
       ...node,
-      children: [...node.children.slice(0, i + 1), pane(newId), ...node.children.slice(i + 1)],
+      children: [...node.children.slice(0, at), pane(newId), ...node.children.slice(at)],
       sizes: [...node.sizes.slice(0, i), half, half, ...node.sizes.slice(i + 1)],
     };
   });
   if (parentDone !== tree) return parentDone;
   return map(tree, (node) =>
     node.type === 'pane' && node.id === paneId
-      ? { type: 'split', dir, sizes: [0.5, 0.5], children: [node, pane(newId)] }
+      ? { type: 'split', dir, sizes: [0.5, 0.5], children: before ? [pane(newId), node] : [node, pane(newId)] }
       : node,
   );
 }
@@ -110,6 +112,11 @@ function heir(tree, paneId) {
   return null;
 }
 
+// Puts newId where oldId was, e.g. when panes trade places across two windows.
+function replacePane(tree, oldId, newId) {
+  return map(tree, (node) => (node.type === 'pane' && node.id === oldId ? pane(newId) : node));
+}
+
 function swapPanes(tree, a, b) {
   if (a === b) return tree;
   const ids = leaves(tree);
@@ -139,8 +146,8 @@ function setSizes(tree, path, sizes) {
   return update(tree, 0);
 }
 
-// The tree without leaf ids, for saving. A pane tree's leaves save as 'pane'; the
-// window tiling passes leafShape to save each window's own pane shape in its leaf.
+// The tree without leaf ids, for saving. Leaves save as 'pane' unless leafShape
+// says otherwise.
 function shape(node, leafShape = () => 'pane') {
   if (node.type === 'pane') return leafShape(node.id);
   return { dir: node.dir, sizes: node.sizes, children: node.children.map((c) => shape(c, leafShape)) };
@@ -161,28 +168,4 @@ function hydrate(saved, makeLeaf, isLeaf = (s) => s === 'pane') {
   return build(saved);
 }
 
-// Integer rectangles for every leaf inside area. Edges are rounded from the running
-// total, so neighbors share an edge and the leaves cover area exactly.
-function rects(tree, area, out = new Map()) {
-  if (tree.type === 'pane') {
-    out.set(tree.id, { x: area.x, y: area.y, width: area.width, height: area.height });
-    return out;
-  }
-  const row = tree.dir === 'row';
-  const start = row ? area.x : area.y;
-  const length = row ? area.width : area.height;
-  let edge = start;
-  let total = 0;
-  tree.children.forEach((child, i) => {
-    total += tree.sizes[i];
-    const next = i === tree.children.length - 1 ? start + length : start + Math.round(length * total);
-    const sub = row
-      ? { x: edge, y: area.y, width: next - edge, height: area.height }
-      : { x: area.x, y: edge, width: area.width, height: next - edge };
-    rects(child, sub, out);
-    edge = next;
-  });
-  return out;
-}
-
-module.exports = { pane, leaves, splitPane, removePane, heir, swapPanes, setSizes, shape, hydrate, rects };
+module.exports = { pane, leaves, splitPane, removePane, heir, replacePane, swapPanes, setSizes, shape, hydrate };

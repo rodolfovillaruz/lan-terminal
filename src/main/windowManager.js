@@ -1,4 +1,4 @@
-const { BrowserWindow, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, screen } = require('electron');
 const { EventEmitter } = require('events');
 const path = require('path');
 const os = require('os');
@@ -7,18 +7,28 @@ const pty = require('node-pty');
 const { save: saveConfig } = require('./config');
 const layout = require('./layout');
 
+// Where a dragged pane lands relative to the pane it is dropped on.
+const ZONES = {
+  center: null, // trade places
+  left: { dir: 'row', before: true },
+  right: { dir: 'row', before: false },
+  top: { dir: 'col', before: true },
+  bottom: { dir: 'col', before: false },
+};
+
 class WindowManager extends EventEmitter {
   constructor(config) {
     super();
     this.config = config;
-    // id (UUID) -> { id, win, panes, layout, activePane, moveMode, alwaysOnTop, ready, bounds }
-    // panes: paneId -> { id, pty, title, process, ready, pending, exited }
+    // id (UUID) -> { id, win, panes, layout, activePane, moveMode, alwaysOnTop, ready }
+    // panes: paneId -> { id, term, pty, title, process, ready, pending, exited }
+    // A pane's term is the window showing it; it changes when the pane moves.
     this.terminals = new Map();
     this.saveTimer = null;
     this.planner = null; // the layout planner window, while open
-    // Split tree whose leaves are window ids. The planner edits it and tiles the
-    // capture windows from it; without the planner open, windows stay where they are.
-    this.tiling = null;
+    this.snapshots = new Map(); // request id -> resolve(serialized pane contents)
+    this.quitting = false;
+    app.on('before-quit', () => { this.quitting = true; });
 
     // Label each pane with its foreground process (bash, vim, claude, ...).
     setInterval(() => {
@@ -61,6 +71,12 @@ class WindowManager extends EventEmitter {
       if (pane.pending) event.sender.send('pty:data', pane.id, pane.pending);
       pane.pending = '';
     });
+    // A pane's screen and scrollback, serialized so it can move to another window.
+    ipcMain.on('pane:serialized', (_event, requestId, data) => {
+      const resolve = this.snapshots.get(requestId);
+      this.snapshots.delete(requestId);
+      resolve?.(typeof data === 'string' ? data : '');
+    });
     ipcMain.on('pane:focus', (event, paneId) => {
       const term = this.#fromSender(event);
       if (term && term.panes.has(paneId) && term.activePane !== paneId) {
@@ -100,27 +116,25 @@ class WindowManager extends EventEmitter {
       presenterMode: config.presenterMode,
     }));
 
-    // Planner window -> window tiling and the panes inside each window.
+    // Planner window -> windows and the panes inside them.
     ipcMain.handle('planner:state', () => this.#plannerState());
     const plannerAction = (channel, fn) =>
-      ipcMain.on(channel, (event, ...args) => {
-        if (!this.planner || this.planner.isDestroyed() || event.sender !== this.planner.webContents) return;
+      ipcMain.on(channel, async (event, ...args) => {
+        if (!this.#plannerOpen() || event.sender !== this.planner.webContents) return;
         try {
-          fn(...args);
+          await fn(...args);
         } catch (err) {
           console.warn(`${channel}:`, err.message);
         }
       });
     plannerAction('planner:split', (id, paneId, dir) => this.splitPane(id, paneId, dir));
     plannerAction('planner:close', (id, paneId) => this.closePane(id, paneId));
-    plannerAction('planner:swap', (id, a, b) => this.swapPanes(id, a, b));
+    plannerAction('planner:move', (fromId, paneId, toId, targetId, zone) => this.movePane(fromId, paneId, toId, targetId, zone));
     plannerAction('planner:resize', (id, splitPath, sizes) => this.resizeSplit(id, splitPath, sizes));
     plannerAction('planner:select', (id, paneId) => this.selectPane(id, paneId));
-    plannerAction('planner:tile-split', (id, dir) => this.tileSplit(id, dir));
-    plannerAction('planner:tile-close', (id) => this.tileClose(id));
-    plannerAction('planner:tile-swap', (a, b) => this.tileSwap(a, b));
-    plannerAction('planner:tile-resize', (splitPath, sizes) => this.tileResize(splitPath, sizes));
-    plannerAction('planner:untile', () => this.untile());
+    plannerAction('planner:new-window', () => this.create());
+    plannerAction('planner:close-window', (id) => this.terminals.size > 1 && this.close(id));
+    plannerAction('planner:focus-window', (id) => this.focus(id));
   }
 
   #fromSender(event) {
@@ -161,9 +175,8 @@ class WindowManager extends EventEmitter {
     const { width, height } = this.#fullBounds();
     return {
       aspect: width / height,
-      tiling: this.tiling,
       windows: [...this.terminals.values()]
-        .filter((t) => !t.win.isDestroyed())
+        .filter((t) => !t.closed && !t.win.isDestroyed())
         .map((t) => ({ id: t.id, focused: t.win.isFocused(), layout: t.layout, active: t.activePane, panes: this.#paneList(t) })),
     };
   }
@@ -181,55 +194,17 @@ class WindowManager extends EventEmitter {
     this.#saveSoon();
   }
 
-  // Saves the tiling with each window's pane shape for the next start. The shape is
-  // taken now, not when the timer fires, so windows closing on quit are not lost.
+  // Saves each window's pane shape for the next start. The shapes are taken now, not
+  // when the timer fires, and nothing is saved while quitting, so the windows closing
+  // on quit do not erase the saved set.
   #saveSoon() {
-    if (!this.tiling) return;
-    const saved = layout.shape(this.tiling, (id) => {
-      const term = this.terminals.get(id);
-      return { panes: term ? layout.shape(term.layout) : 'pane' };
-    });
+    if (this.quitting) return;
+    const saved = [...this.terminals.values()].filter((t) => !t.closed).map((t) => layout.shape(t.layout));
     clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
-      this.config.tiling = saved;
+      this.config.windows = saved;
       saveConfig(this.config);
     }, 500);
-  }
-
-  // Brings the tiling in line with the open windows: closed ones leave, new ones are
-  // split off the last tile (or laid out in one even row when there is no tiling yet).
-  #reconcileTiling() {
-    const open = [...this.terminals.keys()];
-    let tree = this.tiling;
-    if (tree) {
-      for (const id of layout.leaves(tree)) if (!this.terminals.has(id)) tree = layout.removePane(tree, id);
-    }
-    if (!tree && open.length > 1) {
-      tree = { type: 'split', dir: 'row', sizes: open.map(() => 1 / open.length), children: open.map(layout.pane) };
-    }
-    for (const id of open) {
-      if (tree && layout.leaves(tree).includes(id)) continue;
-      tree = tree ? layout.splitPane(tree, layout.leaves(tree).at(-1), 'row', id) : layout.pane(id);
-    }
-    this.tiling = tree;
-  }
-
-  #applyTiling() {
-    if (!this.tiling) return;
-    for (const [id, rect] of layout.rects(this.tiling, this.#fullBounds())) {
-      const term = this.terminals.get(id);
-      if (term && !term.win.isDestroyed()) this.#setBounds(term, rect);
-    }
-    this.#changed();
-  }
-
-  // Terminal windows are not user-resizable, which X11 enforces with fixed size hints,
-  // so lift that just for the resize.
-  #setBounds(term, rect) {
-    term.bounds = rect;
-    term.win.setResizable(true);
-    term.win.setBounds(rect);
-    term.win.setResizable(false);
   }
 
   #spawnPane(term) {
@@ -242,17 +217,17 @@ class WindowManager extends EventEmitter {
       cwd: os.homedir(),
       env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
     });
-    const pane = { id, pty: proc, title: path.basename(shell), process: path.basename(shell), ready: false, pending: '', exited: false };
+    const pane = { id, term, pty: proc, title: path.basename(shell), process: path.basename(shell), ready: false, pending: '', exited: false };
     term.panes.set(id, pane);
 
     proc.onData((data) => {
       // Hold output until the pane's xterm is listening so the first prompt is not lost.
       if (!pane.ready) pane.pending += data;
-      else if (!term.win.isDestroyed()) term.win.webContents.send('pty:data', id, data);
+      else if (!pane.term.win.isDestroyed()) pane.term.win.webContents.send('pty:data', id, data);
     });
     proc.onExit(() => {
       pane.exited = true;
-      this.#removePane(term, id);
+      this.#removePane(pane.term, id);
     });
     return id;
   }
@@ -271,14 +246,42 @@ class WindowManager extends EventEmitter {
     this.#pushLayout(term);
   }
 
-  // bounds places the window as a tile; without it the window fills the screen.
-  // A window opened while the planner is open joins the tiling unless skipTiling.
-  create({ layout: saved, bounds, skipTiling = false } = {}) {
+  // Stops sending a pane's output to its window and asks that window for the pane's
+  // screen and scrollback. Output from then on waits in pane.pending, after the
+  // snapshot, for the window that shows the pane next.
+  #detach(pane) {
+    pane.ready = false;
+    const term = pane.term;
+    if (!term.ready || term.win.isDestroyed()) return Promise.resolve('');
+    const requestId = crypto.randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.snapshots.delete(requestId);
+        resolve('');
+      }, 1000);
+      this.snapshots.set(requestId, (data) => {
+        clearTimeout(timer);
+        resolve(data);
+      });
+      term.win.webContents.send('pane:serialize', requestId, pane.id);
+    });
+  }
+
+  // The pane did not move after all: its window still has its xterm, so resume output.
+  #reattach(pane) {
+    const term = pane.term;
+    if (term.closed || term.win.isDestroyed()) return;
+    pane.ready = true;
+    if (pane.pending) term.win.webContents.send('pty:data', pane.id, pane.pending);
+    pane.pending = '';
+  }
+
+  create({ layout: saved } = {}) {
     const id = crypto.randomUUID();
-    const initial = bounds || this.#fullBounds();
+    const bounds = this.#fullBounds();
 
     const win = new BrowserWindow({
-      ...initial,
+      ...bounds,
       frame: false,
       roundedCorners: false,
       resizable: false,
@@ -298,7 +301,7 @@ class WindowManager extends EventEmitter {
     });
     win.setMenu(null);
 
-    const term = { id, win, panes: new Map(), layout: null, activePane: null, moveMode: false, alwaysOnTop: false, ready: false, bounds: bounds || null };
+    const term = { id, win, panes: new Map(), layout: null, activePane: null, moveMode: false, alwaysOnTop: false, ready: false };
     this.terminals.set(id, term);
     term.layout = saved ? layout.hydrate(saved, () => this.#spawnPane(term)) : layout.pane(this.#spawnPane(term));
     term.activePane = layout.leaves(term.layout)[0];
@@ -324,47 +327,25 @@ class WindowManager extends EventEmitter {
       term.closed = true;
       for (const pane of term.panes.values()) if (!pane.exited) pane.pty.kill();
       this.terminals.delete(id);
-      // Its neighbor takes over the tile; the planner shows that at once.
-      if (this.tiling && layout.leaves(this.tiling).includes(id)) {
-        this.tiling = layout.removePane(this.tiling, id);
-        if (this.#plannerOpen()) this.#applyTiling();
-        if (term.closedByPlanner) this.#saveSoon();
-      }
       this.#changed();
+      this.#saveSoon();
     });
     win.once('ready-to-show', () => win.show());
     // KWin shrinks a new window to the work area (above the panel) when it is mapped.
-    // A resize after mapping is not clamped, so restore the size once it is shown.
-    win.once('show', () => this.#setBounds(term, term.bounds || this.#fullBounds()));
+    // A resize after mapping is not clamped, so restore the full size once it is shown.
+    win.once('show', () => win.setBounds(bounds));
 
     win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
-    if (this.#plannerOpen() && !skipTiling) {
-      this.#reconcileTiling();
-      this.#applyTiling();
-    }
     this.#changed();
+    this.#saveSoon();
     return id;
   }
 
-  // Startup: one window per saved tile, placed in its tile with its saved panes.
+  // Startup: one window per saved pane shape.
   restore(saved) {
-    if (!saved) return this.create();
-    const isLeaf = (s) => typeof s === 'object' && s !== null && 'panes' in s;
-    const shapes = new Map();
-    let n = 0;
-    const tree = layout.hydrate(saved, (leaf) => {
-      const key = `tile${n++}`;
-      shapes.set(key, leaf?.panes);
-      return key;
-    }, isLeaf);
-    if (tree.type === 'pane') return this.create({ layout: shapes.get(tree.id) });
-    const rects = layout.rects(tree, this.#fullBounds());
-    const ids = new Map();
-    for (const [key, rect] of rects) ids.set(key, this.create({ layout: shapes.get(key), bounds: rect }));
-    const relabel = (node) =>
-      node.type === 'pane' ? layout.pane(ids.get(node.id)) : { ...node, children: node.children.map(relabel) };
-    this.tiling = relabel(tree);
-    return [...ids.values()][0];
+    if (!Array.isArray(saved) || saved.length === 0) return this.create();
+    const ids = saved.map((shape) => this.create({ layout: shape }));
+    return ids[0];
   }
 
   get(id) {
@@ -481,12 +462,73 @@ class WindowManager extends EventEmitter {
     return true;
   }
 
-  swapPanes(id, a, b) {
-    const term = this.get(id);
-    if (!term) return false;
-    term.layout = layout.swapPanes(term.layout, a, b);
-    this.#pushLayout(term);
-    return true;
+  // Moves pane paneId of window fromId onto pane targetId of window toId. The center
+  // zone trades the two panes' places; an edge zone puts the pane beside the target.
+  // Across windows the shell keeps running and its screen and scrollback come along.
+  // Moving a window's last pane out closes that window.
+  async movePane(fromId, paneId, toId, targetId, zone) {
+    if (!(zone in ZONES)) throw new Error('unknown drop zone');
+    const from = this.get(fromId);
+    const to = this.get(toId);
+    const pane = from?.panes.get(paneId);
+    const target = to?.panes.get(targetId);
+    if (!pane || !target || paneId === targetId) return false;
+    const place = ZONES[zone];
+
+    if (from === to) {
+      from.layout = place
+        ? layout.splitPane(layout.removePane(from.layout, paneId), targetId, place.dir, paneId, place.before)
+        : layout.swapPanes(from.layout, paneId, targetId);
+      from.activePane = paneId;
+      this.#pushLayout(from);
+      return true;
+    }
+
+    if (from.moving || to.moving) return false;
+    from.moving = true;
+    to.moving = true;
+    try {
+      const [snapshot, targetSnapshot] = await Promise.all([this.#detach(pane), place ? null : this.#detach(target)]);
+      // A window or pane can go away while the snapshots are on their way.
+      if (from.closed || to.closed || pane.exited || target.exited || !from.panes.has(paneId) || !to.panes.has(targetId)) {
+        this.#reattach(pane);
+        if (!place) this.#reattach(target);
+        return false;
+      }
+      pane.pending = snapshot + pane.pending;
+      from.panes.delete(paneId);
+      to.panes.set(paneId, pane);
+      pane.term = to;
+
+      if (place) {
+        to.layout = layout.splitPane(to.layout, targetId, place.dir, paneId, place.before);
+        const heir = layout.heir(from.layout, paneId);
+        const rest = layout.removePane(from.layout, paneId);
+        if (rest) {
+          from.layout = rest;
+          if (from.activePane === paneId) from.activePane = heir;
+        }
+        to.activePane = paneId;
+        this.#pushLayout(to);
+        if (rest) this.#pushLayout(from);
+        else from.win.close();
+      } else {
+        target.pending = targetSnapshot + target.pending;
+        to.panes.delete(targetId);
+        from.panes.set(targetId, target);
+        target.term = from;
+        from.layout = layout.replacePane(from.layout, paneId, targetId);
+        to.layout = layout.replacePane(to.layout, targetId, paneId);
+        if (from.activePane === paneId) from.activePane = targetId;
+        if (to.activePane === targetId) to.activePane = paneId;
+        this.#pushLayout(from);
+        this.#pushLayout(to);
+      }
+      return true;
+    } finally {
+      from.moving = false;
+      to.moving = false;
+    }
   }
 
   resizeSplit(id, splitPath, sizes) {
@@ -507,55 +549,9 @@ class WindowManager extends EventEmitter {
     return true;
   }
 
-  // Window tiling, driven by the planner. Each edit retiles the screen at once.
-  tileSplit(id, dir) {
-    if (!this.tiling || !layout.leaves(this.tiling).includes(id)) return false;
-    if (dir !== 'row' && dir !== 'col') throw new Error('dir must be row or col');
-    const newId = this.create({ skipTiling: true });
-    this.tiling = layout.splitPane(this.tiling, id, dir, newId);
-    this.#applyTiling();
-    this.#saveSoon();
-    return true;
-  }
-
-  // The window's 'closed' handler hands its tile to the neighbor.
-  tileClose(id) {
-    const term = this.get(id);
-    if (!term || this.terminals.size === 1) return false;
-    term.closedByPlanner = true;
-    term.win.close();
-    return true;
-  }
-
-  tileSwap(a, b) {
-    if (!this.tiling) return false;
-    this.tiling = layout.swapPanes(this.tiling, a, b);
-    this.#applyTiling();
-    this.#saveSoon();
-    return true;
-  }
-
-  tileResize(splitPath, sizes) {
-    if (!this.tiling) return false;
-    this.tiling = layout.setSizes(this.tiling, splitPath, sizes);
-    this.#applyTiling();
-    this.#saveSoon();
-    return true;
-  }
-
-  // Back to stacked full-screen windows. The tiling is kept for the next edit.
-  untile() {
-    for (const term of this.terminals.values()) {
-      if (!term.win.isDestroyed()) this.#setBounds(term, this.#fullBounds());
-    }
-    for (const term of this.terminals.values()) term.bounds = null;
-    this.#changed();
-    return true;
-  }
-
-  // A single planner tiles every capture window. It is a normal framed window and not
-  // a terminal, so it stays out of this.terminals and the focus list. It stays on top
-  // because the capture windows fill the screen.
+  // A single planner shows every capture window and its panes. It is a normal framed
+  // window and not a terminal, so it stays out of this.terminals and the focus list.
+  // It stays on top because the capture windows fill the screen.
   openPlanner() {
     if (this.#plannerOpen()) {
       this.planner.show();
@@ -584,8 +580,6 @@ class WindowManager extends EventEmitter {
     });
     this.planner = planner;
     planner.loadFile(path.join(__dirname, '..', 'planner', 'planner.html'));
-    this.#reconcileTiling();
-    this.#applyTiling();
     return true;
   }
 }

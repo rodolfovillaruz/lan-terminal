@@ -9,7 +9,7 @@ async function main() {
 
   const root = document.getElementById('terminal');
   const overlay = document.getElementById('move-overlay');
-  const panes = new Map(); // paneId -> { el, term, fit }
+  const panes = new Map(); // paneId -> { el, term, fit, serialize, syncSize }
   let active = null;
 
   const createPane = (id) => {
@@ -25,6 +25,9 @@ async function main() {
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
+    // Lets the pane's screen and scrollback move with it to another window.
+    const serialize = new SerializeAddon.SerializeAddon();
+    term.loadAddon(serialize);
     // xterm measures its container on open, so the element must be in the page first.
     root.appendChild(el);
     term.open(el);
@@ -52,7 +55,7 @@ async function main() {
       window.terminal.focusPane(id);
     });
 
-    const p = { el, term, fit, syncSize };
+    const p = { el, term, fit, serialize, syncSize };
     panes.set(id, p);
     window.terminal.paneReady(id);
     return p;
@@ -76,6 +79,16 @@ async function main() {
   };
 
   window.terminal.onData((id, data) => panes.get(id)?.term.write(data));
+  window.terminal.onSerialize((requestId, id) => {
+    const p = panes.get(id);
+    let data = '';
+    try {
+      data = p ? p.serialize.serialize({ scrollback: 10000 }) : '';
+    } catch (err) {
+      console.warn('Could not serialize pane', err);
+    }
+    window.terminal.serialized(requestId, data);
+  });
   window.terminal.onLayout((state) => {
     const seen = new Set();
     const tree = build(state.layout, seen);

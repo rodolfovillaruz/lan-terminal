@@ -40,7 +40,7 @@ function start() {
     windows = new WindowManager(cfg);
     tray = createTray(cfg, windows);
     startApi(cfg, windows);
-    windows.restore(cfg.tiling);
+    windows.restore(cfg.windows);
     console.log(`Config: ${config.CONFIG_PATH}`);
   });
 }
