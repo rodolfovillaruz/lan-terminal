@@ -59,4 +59,21 @@ assert.deepStrictEqual(L.leaves(h), ['p0', 'p1', 'p2']);
 assert.deepStrictEqual(L.hydrate({ bogus: 1 }, () => 'q'), L.pane('q'));
 assert.strictEqual(L.removePane(L.pane('a'), 'a'), null);
 
+// Window tiling: custom leaf shapes round-trip and rects cover the screen exactly.
+let w = L.splitPane(L.pane('w1'), 'w1', 'row', 'w2');
+w = L.splitPane(w, 'w2', 'col', 'w3');
+w = L.setSizes(w, [], [1, 2]);
+const saved = JSON.parse(JSON.stringify(L.shape(w, (id) => ({ panes: id === 'w1' ? 'pane' : { dir: 'row', sizes: [0.5, 0.5], children: ['pane', 'pane'] } }))));
+const made = [];
+const w2 = L.hydrate(saved, (leaf) => { made.push(leaf); return `n${made.length}`; }, (s) => typeof s === 'object' && s !== null && 'panes' in s);
+assert.deepStrictEqual(L.leaves(w2), ['n1', 'n2', 'n3']);
+assert.strictEqual(made[0].panes, 'pane');
+assert.strictEqual(made[1].panes.dir, 'row');
+const screen = { x: 0, y: 0, width: 1921, height: 1081 };
+const rs = L.rects(w2, screen);
+assert.deepStrictEqual(rs.get('n1'), { x: 0, y: 0, width: 640, height: 1081 });
+assert.deepStrictEqual(rs.get('n2'), { x: 640, y: 0, width: 1281, height: 541 });
+assert.deepStrictEqual(rs.get('n3'), { x: 640, y: 541, width: 1281, height: 540 });
+assert.strictEqual([...rs.values()].reduce((a, r) => a + r.width * r.height, 0), 1921 * 1081);
+
 console.log('layout ok');

@@ -17,12 +17,10 @@ function createTray(config, windows) {
   const build = (list = windows.list()) => {
     const windowItems = list.length
       ? list.map((w) => ({
-          // An item with a submenu cannot also be a radio, so a dot marks the focused window.
-          label: `${w.focused ? '●' : '○'}  ${w.title === w.process ? w.process : `${w.process} — ${w.title}`}`,
-          submenu: [
-            { label: 'Select capture window', click: () => windows.focus(w.id) },
-            { label: `Plan layout… (${w.panes.length} ${w.panes.length === 1 ? 'pane' : 'panes'})`, click: () => windows.openPlanner(w.id) },
-          ],
+          label: w.title === w.process ? w.process : `${w.process} — ${w.title}`,
+          type: 'radio',
+          checked: w.focused,
+          click: () => windows.focus(w.id),
         }))
       : [{ label: 'No open windows', enabled: false }];
 
@@ -33,6 +31,7 @@ function createTray(config, windows) {
         ...windowItems,
         { type: 'separator' },
         { label: 'New window', click: () => windows.create() },
+        { label: 'Plan layout…', click: () => windows.openPlanner() },
         { type: 'separator' },
         ...urls.map((u) => ({ label: `API: ${u}`, enabled: false })),
         { label: 'Copy API token', click: () => clipboard.writeText(config.token) },

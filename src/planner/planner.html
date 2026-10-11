@@ -3,13 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'">
-  <title>Pane layout — LAN Terminal</title>
+  <title>Plan layout — LAN Terminal</title>
   <link rel="stylesheet" href="planner.css">
 </head>
 <body>
   <header>
-    <h1>Pane layout</h1>
-    <p>Split or close panes with the buttons. Drag a pane onto another to swap them, and drag the gaps between panes to resize. The capture window updates as you edit.</p>
+    <div>
+      <h1>Plan layout</h1>
+      <p>Each window is a capture window, tiled across the screen. Split, close or drag a window by its title bar to swap it; inside a window, do the same with its panes. Drag the gaps to resize. Changes apply as you make them.</p>
+    </div>
+    <button id="untile" title="Put every window back to full screen. The next edit tiles them again.">Full screen</button>
   </header>
   <main>
     <div id="stage"></div>

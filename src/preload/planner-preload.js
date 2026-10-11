@@ -1,12 +1,17 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-// The main process knows which capture window this planner belongs to from the sender.
+// One planner tiles every capture window; window ids pick which window a pane edit is for.
 contextBridge.exposeInMainWorld('planner', {
   getState: () => ipcRenderer.invoke('planner:state'),
   onState: (cb) => ipcRenderer.on('planner:state', (_e, state) => cb(state)),
-  split: (paneId, dir) => ipcRenderer.send('planner:split', paneId, dir),
-  close: (paneId) => ipcRenderer.send('planner:close', paneId),
-  swap: (a, b) => ipcRenderer.send('planner:swap', a, b),
-  resize: (path, sizes) => ipcRenderer.send('planner:resize', path, sizes),
-  select: (paneId) => ipcRenderer.send('planner:select', paneId),
+  split: (windowId, paneId, dir) => ipcRenderer.send('planner:split', windowId, paneId, dir),
+  close: (windowId, paneId) => ipcRenderer.send('planner:close', windowId, paneId),
+  swap: (windowId, a, b) => ipcRenderer.send('planner:swap', windowId, a, b),
+  resize: (windowId, path, sizes) => ipcRenderer.send('planner:resize', windowId, path, sizes),
+  select: (windowId, paneId) => ipcRenderer.send('planner:select', windowId, paneId),
+  tileSplit: (windowId, dir) => ipcRenderer.send('planner:tile-split', windowId, dir),
+  tileClose: (windowId) => ipcRenderer.send('planner:tile-close', windowId),
+  tileSwap: (a, b) => ipcRenderer.send('planner:tile-swap', a, b),
+  tileResize: (path, sizes) => ipcRenderer.send('planner:tile-resize', path, sizes),
+  untile: () => ipcRenderer.send('planner:untile'),
 });

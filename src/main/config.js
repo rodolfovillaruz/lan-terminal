@@ -18,7 +18,7 @@ const DEFAULTS = {
   background: '#000000',
   foreground: '#e6e6e6',
   presenterMode: true, // move mode shows only the move cursor, no overlay or hint
-  layout: null, // pane split shape of the startup window; saved from the layout planner
+  tiling: null, // window tiling and each window's panes, saved from the layout planner
 };
 
 function load() {
@@ -30,6 +30,9 @@ function load() {
   }
 
   const config = { ...DEFAULTS, ...stored };
+  // Older builds saved one window's pane shape as layout.
+  if (config.layout && !config.tiling) config.tiling = { panes: config.layout };
+  delete config.layout;
   if (!config.token) config.token = crypto.randomBytes(24).toString('base64url');
 
   // Write back so new defaults and the generated token are visible to the user.

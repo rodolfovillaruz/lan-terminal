@@ -139,25 +139,50 @@ function setSizes(tree, path, sizes) {
   return update(tree, 0);
 }
 
-// The tree without pane ids, for saving: each leaf is the string 'pane'.
-function shape(node) {
-  if (node.type === 'pane') return 'pane';
-  return { dir: node.dir, sizes: node.sizes, children: node.children.map(shape) };
+// The tree without leaf ids, for saving. A pane tree's leaves save as 'pane'; the
+// window tiling passes leafShape to save each window's own pane shape in its leaf.
+function shape(node, leafShape = () => 'pane') {
+  if (node.type === 'pane') return leafShape(node.id);
+  return { dir: node.dir, sizes: node.sizes, children: node.children.map((c) => shape(c, leafShape)) };
 }
 
-// Builds a tree from a saved shape; makeId() creates a pane and returns its id.
-// Anything malformed falls back to a single pane.
-function hydrate(saved, makeId) {
+// Builds a tree from a saved shape; makeLeaf(leafShape) creates a leaf and returns its id.
+// Anything malformed falls back to a single leaf.
+function hydrate(saved, makeLeaf, isLeaf = (s) => s === 'pane') {
   const valid = (s) =>
-    s === 'pane' ||
+    isLeaf(s) ||
     (s && (s.dir === 'row' || s.dir === 'col') && Array.isArray(s.children) && s.children.length >= 2 &&
       Array.isArray(s.sizes) && s.sizes.length === s.children.length && s.children.every(valid));
-  if (!valid(saved)) return pane(makeId());
+  if (!valid(saved)) return pane(makeLeaf(undefined));
   const build = (s) =>
-    s === 'pane'
-      ? pane(makeId())
+    isLeaf(s)
+      ? pane(makeLeaf(s))
       : { type: 'split', dir: s.dir, sizes: normalize(s.sizes.map(Number)), children: s.children.map(build) };
   return build(saved);
 }
 
-module.exports = { pane, leaves, splitPane, removePane, heir, swapPanes, setSizes, shape, hydrate };
+// Integer rectangles for every leaf inside area. Edges are rounded from the running
+// total, so neighbors share an edge and the leaves cover area exactly.
+function rects(tree, area, out = new Map()) {
+  if (tree.type === 'pane') {
+    out.set(tree.id, { x: area.x, y: area.y, width: area.width, height: area.height });
+    return out;
+  }
+  const row = tree.dir === 'row';
+  const start = row ? area.x : area.y;
+  const length = row ? area.width : area.height;
+  let edge = start;
+  let total = 0;
+  tree.children.forEach((child, i) => {
+    total += tree.sizes[i];
+    const next = i === tree.children.length - 1 ? start + length : start + Math.round(length * total);
+    const sub = row
+      ? { x: edge, y: area.y, width: next - edge, height: area.height }
+      : { x: area.x, y: edge, width: area.width, height: next - edge };
+    rects(child, sub, out);
+    edge = next;
+  });
+  return out;
+}
+
+module.exports = { pane, leaves, splitPane, removePane, heir, swapPanes, setSizes, shape, hydrate, rects };
