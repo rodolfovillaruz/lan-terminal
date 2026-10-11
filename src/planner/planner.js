@@ -228,6 +228,8 @@ function displayLabel(display) {
 // What a pane shows, as one line: "tmux work — vim notes.md", "bash", "vim — notes.md".
 function paneLabel(info) {
   const name = paneName(info);
+  // A device pane's title is its model, which the name already starts with.
+  if (info.device) return name;
   return info.title && info.title !== name && info.title !== info.process ? `${name} — ${info.title}` : name;
 }
 
@@ -343,6 +345,75 @@ function fillSourceMenu(select, current, st) {
   select.value = current ?? '';
 }
 
+// Opens an app on a device pane's screen or new display. The device's apps are
+// fetched when the menu opens (the main process keeps them a minute, and listing them
+// takes the device a few seconds the first time). Like the source menu, it holds
+// redraws while it has focus.
+function appMenu(win, id, info) {
+  const select = document.createElement('select');
+  select.className = 'source apps';
+  select.title = info.display === null
+    ? 'Open an app on the phone'
+    : 'Open an app on this new display; it opens again when the display comes back';
+  const fill = (apps, note) => {
+    const option = (parent, value, label) => {
+      const o = document.createElement('option');
+      o.value = value;
+      o.textContent = label;
+      parent.appendChild(o);
+      return o;
+    };
+    select.replaceChildren();
+    option(select, '', note ?? 'Open app…').disabled = true;
+    for (const [label, system] of [['Apps', false], ['System apps', true]]) {
+      const group = document.createElement('optgroup');
+      group.label = label;
+      for (const app of apps.filter((a) => a.system === system)) option(group, app.package, app.name).title = app.package;
+      if (group.children.length) select.appendChild(group);
+    }
+    select.value = '';
+  };
+  fill([]);
+
+  let opening = false;
+  select.addEventListener('mousedown', async (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    opening = true;
+    select.focus();
+    fill([], 'Loading apps…');
+    let apps = [];
+    try {
+      apps = await window.planner.deviceApps(info.device);
+    } finally {
+      opening = false;
+    }
+    fill(apps, apps.length ? null : 'No apps found');
+    if (document.activeElement !== select) return;
+    try {
+      select.showPicker();
+    } catch {
+      // The click's activation ran out while the device listed its apps; the next
+      // click opens the menu at once.
+    }
+  });
+  select.addEventListener('focus', async () => {
+    choosing = true;
+    if (opening) return;
+    // Reached with the keyboard.
+    fill(await window.planner.deviceApps(info.device));
+  });
+  select.addEventListener('blur', () => {
+    choosing = false;
+    flush();
+  });
+  select.addEventListener('change', () => {
+    if (select.value) window.planner.openApp(win.id, id, select.value);
+    select.blur();
+  });
+  return select;
+}
+
 function paneBox(win, id) {
   const info = win.panes.find((p) => p.id === id);
   const el = document.createElement('div');
@@ -376,6 +447,7 @@ function paneBox(win, id) {
     win.panes.length === 1 && !win.locked;
 
   el.append(zone, tools, proc, source);
+  if (info.device) el.append(appMenu(win, id, info));
   el.dataset.windowId = win.id;
   el.dataset.paneId = id;
   startDrag(el, win.id, id, proc.textContent);

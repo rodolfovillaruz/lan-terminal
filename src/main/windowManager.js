@@ -24,10 +24,14 @@ const ZONES = {
 // display } for an Android device (its adb serial): its screen, or with display a
 // new virtual display on it (see scrcpy.validDisplay). A saved pane shape stores it
 // as its leaf: 'pane', { <mux>: name } (e.g. { tmux: 'work' }), { linuxserver: app,
-// name, tag } or { scrcpy: serial, display }. { webtop: name, tag } is the older form for a
+// name, tag } or { scrcpy: serial, display, startApp }, where startApp is the app
+// last opened on a new display, which opens again when the display comes back. { webtop: name, tag } is the older form for a
 // webtop.
 const leafSource = (s) => {
-  if (scrcpy.validSerial(s?.scrcpy)) return { device: s.scrcpy, display: scrcpy.validDisplay(s.display) ? s.display : null };
+  if (scrcpy.validSerial(s?.scrcpy)) {
+    const display = scrcpy.validDisplay(s.display) ? s.display : null;
+    return { device: s.scrcpy, display, startApp: display !== null && scrcpy.validPackage(s.startApp) ? s.startApp : null };
+  }
   const app = s?.linuxserver ?? (s?.webtop !== undefined ? 'webtop' : undefined);
   const instance = s?.linuxserver ? s.name : s?.webtop;
   if (ls.validApp(app) && ls.validName(instance)) return { app, instance, tag: ls.validTag(s.tag) ? s.tag : 'latest' };
@@ -36,7 +40,7 @@ const leafSource = (s) => {
 };
 const isLeaf = (s) => s === 'pane' || leafSource(s) !== null;
 const paneLeaf = (p) =>
-  p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
+  p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
 const sameSource = (p, source) =>
   (p.device ?? null) === (source?.device ?? null) && (p.display ?? null) === (source?.display ?? null) &&
   p.app === (source?.app ?? null) && p.instance === (source?.instance ?? null) &&
@@ -68,6 +72,8 @@ class WindowManager extends EventEmitter {
     this.adb = scrcpy.findAdb(config.adb);
     this.devices = []; // Android devices as last listed: [{ serial, model }]
     this.scrcpyTools = null; // the installed scrcpy's { version, server }, once found
+    // serial -> { apps, at, loading }: each device's apps for the planner's app menus.
+    this.deviceApps = new Map();
     this.quitting = false;
     app.on('before-quit', () => { this.quitting = true; });
     // systemd stops the service with SIGTERM. Quit through the app so the locked
@@ -214,6 +220,15 @@ class WindowManager extends EventEmitter {
     plannerAction('planner:source', (id, paneId, source) => this.setPaneSource(id, paneId, source));
     plannerAction('planner:add-pane', (id, source) => this.addPane(id, source));
     plannerAction('planner:stop-app', (app, instance) => this.stopApp(app, instance));
+    plannerAction('planner:open-app', (id, paneId, pkg) => this.openDeviceApp(id, paneId, pkg));
+    // A device pane's app menu is opening: the device's apps, listed now if need be.
+    ipcMain.handle('planner:device-apps', (event, serial) => {
+      if (!this.#plannerOpen() || event.sender !== this.planner.webContents) return [];
+      return this.#deviceApps(serial).catch((err) => {
+        console.warn(`apps on ${serial}:`, err.message);
+        return [];
+      });
+    });
     plannerAction('planner:new-window', () => this.create());
     plannerAction('planner:close-window', (id) => this.terminals.size > 1 && this.close(id));
     plannerAction('planner:lock-window', (id, locked) => this.setLocked(id, locked));
@@ -250,7 +265,7 @@ class WindowManager extends EventEmitter {
   #paneList(term) {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
-      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, device: p.device ?? null, display: p.display ?? null, model: p.model ?? null, pid: p.pty?.pid ?? null };
+      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, model: p.model ?? null, pid: p.pty?.pid ?? null };
     });
   }
 
@@ -276,6 +291,43 @@ class WindowManager extends EventEmitter {
   #displayChoices() {
     const extra = Array.isArray(this.config.scrcpyDisplays) ? this.config.scrcpyDisplays : [];
     return [...new Set(['', 'fit', ...extra.filter(scrcpy.validDisplay)])];
+  }
+
+  // A device's apps, listed by the scrcpy server and kept for a minute, since listing
+  // takes the device several seconds. A listing already under way is shared.
+  async #deviceApps(serial) {
+    if (!scrcpy.validSerial(serial) || !this.adb) return [];
+    const cached = this.deviceApps.get(serial);
+    if (cached?.loading) return cached.loading;
+    if (cached?.apps && Date.now() - cached.at < 60000) return cached.apps;
+    this.scrcpyTools ??= await scrcpy.findScrcpy(this.config.scrcpy);
+    const loading = scrcpy.apps({ adb: this.adb, ...this.scrcpyTools }, serial);
+    this.deviceApps.set(serial, { ...cached, loading });
+    try {
+      const apps = await loading;
+      this.deviceApps.set(serial, { apps, at: Date.now() });
+      return apps;
+    } catch (err) {
+      this.deviceApps.set(serial, { ...cached, loading: null });
+      if (cached?.apps) return cached.apps;
+      throw err;
+    }
+  }
+
+  // Opens an app on what a device pane shows: the device's screen, or the pane's new
+  // display, which remembers it and opens it again when the display comes back.
+  openDeviceApp(id, paneId, pkg) {
+    const term = this.get(id);
+    const pane = term?.panes.get(paneId);
+    if (pane?.kind !== 'scrcpy' || !scrcpy.validPackage(pkg)) return false;
+    if (!pane.mirror || !pane.video) throw new Error(`${pane.model} is not connected`);
+    pane.mirror.send({ type: 'startApp', package: pkg });
+    if (pane.display !== null && pane.startApp !== pkg) {
+      pane.startApp = pkg;
+      this.#changed();
+      this.#saveSoon();
+    }
+    return true;
   }
 
   #sendLayout(term) {
@@ -378,10 +430,10 @@ class WindowManager extends EventEmitter {
   // pane, unless scrcpyKeepApps moves the apps to the main screen. When
   // the device is not connected, or the stream stops (a cable pulled, the server
   // killed), the pane says so and tries again every few seconds.
-  #spawnScrcpyPane(term, { device, display = null }) {
+  #spawnScrcpyPane(term, { device, display = null, startApp = null }) {
     const id = crypto.randomUUID();
     const model = this.devices.find((d) => d.serial === device)?.model ?? device;
-    const pane = { id, kind: 'scrcpy', device, display, fitSize: null, model, mirror: null, retry: null, status: `Connecting to ${model}…`, video: null, ready: false, mux: null, session: null, app: null, instance: null, title: model, process: 'scrcpy', exited: false };
+    const pane = { id, kind: 'scrcpy', device, display, startApp, fitSize: null, model, mirror: null, retry: null, status: `Connecting to ${model}…`, video: null, ready: false, mux: null, session: null, app: null, instance: null, title: model, process: 'scrcpy', exited: false };
     term.panes.set(id, pane);
     const send = (channel, ...args) => {
       if (pane.ready && !term.win.isDestroyed()) term.win.webContents.send(channel, id, ...args);
@@ -424,6 +476,10 @@ class WindowManager extends EventEmitter {
         if (!pane.video && fit && scrcpy.isFit(display) && (fit.width !== video.width || fit.height !== video.height)) {
           mirror.send({ type: 'resizeDisplay', ...fit });
         }
+        // A new display starts empty: bring back the app the pane last had open.
+        if (!pane.video && display !== null && pane.startApp) mirror.send({ type: 'startApp', package: pane.startApp });
+        // List the device's apps ahead of the planner's app menu needing them.
+        if (!this.deviceApps.has(device)) this.#deviceApps(device).catch(() => {});
         pane.video = video;
         send('scrcpy:session', video);
         setStatus(null);

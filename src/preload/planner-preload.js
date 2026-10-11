@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld('planner', {
   setSource: (windowId, paneId, source) => ipcRenderer.send('planner:source', windowId, paneId, source),
   addPane: (windowId, source) => ipcRenderer.send('planner:add-pane', windowId, source),
   stopApp: (app, instance) => ipcRenderer.send('planner:stop-app', app, instance),
+  // An Android device's apps ([{ name, package, system }]), and opening one in a device pane.
+  deviceApps: (serial) => ipcRenderer.invoke('planner:device-apps', serial),
+  openApp: (windowId, paneId, pkg) => ipcRenderer.send('planner:open-app', windowId, paneId, pkg),
   newWindow: () => ipcRenderer.send('planner:new-window'),
   lockWindow: (windowId, locked) => ipcRenderer.send('planner:lock-window', windowId, locked),
   closeWindow: (windowId) => ipcRenderer.send('planner:close-window', windowId),

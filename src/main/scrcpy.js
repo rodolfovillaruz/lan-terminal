@@ -28,6 +28,9 @@ const validSerial = (s) => typeof s === 'string' && /^[A-Za-z0-9_.:\[\]@%+-]+$/.
 const validDisplay = (d) => typeof d === 'string' && /^(fit|(\d{2,5}x\d{2,5})?)(\/\d{2,4})?$/.test(d);
 const isFit = (d) => typeof d === 'string' && d.startsWith('fit');
 
+// Android package names: "org.mozilla.firefox".
+const validPackage = (p) => typeof p === 'string' && p.length <= 255 && /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(p);
+
 function run(bin, args, timeout = 10000) {
   return new Promise((resolve, reject) => {
     execFile(bin, args, { timeout }, (err, stdout, stderr) => {
@@ -83,8 +86,30 @@ async function devices(adb) {
     .sort((a, b) => a.model.localeCompare(b.model) || a.serial.localeCompare(b.serial));
 }
 
+// The device's launchable apps as [{ name, package, system }], sorted by name, from
+// the scrcpy server's list_apps (what `scrcpy --list-apps` prints): " * <name>
+// <package>" for a system app, " - <name> <package>" for one the user installed.
+// Reading the app names takes the device a few seconds.
+async function apps({ adb, version, server }, serial) {
+  const list = async () => {
+    await run(adb, ['-s', serial, 'push', server, REMOTE_PATH], 30000);
+    return run(adb, ['-s', serial, 'shell', `CLASSPATH=${REMOTE_PATH}`, 'app_process', '/', 'com.genymobile.scrcpy.Server', version, 'list_apps=true', 'log_level=info'], 60000);
+  };
+  // A mirror's server that exits removes the pushed server, so a listing that starts
+  // just then finds nothing to run; push it again once.
+  let out = await list();
+  if (!out.includes('List of apps:')) out = await list();
+  const found = [];
+  for (const line of out.split('\n')) {
+    const m = line.match(/^ ([*-]) (.+?)\s+(\S+)\s*$/);
+    if (m && validPackage(m[3])) found.push({ name: m[2], package: m[3], system: m[1] === '*' });
+  }
+  if (found.length === 0) throw new Error('could not list the apps');
+  return found.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+}
+
 // Control messages (client -> device), as scrcpy's app/src/control_msg.c writes them.
-const TYPE = { keycode: 0, text: 1, touch: 2, scroll: 3, backOrScreenOn: 4, resetVideo: 17, resizeDisplay: 21 };
+const TYPE = { keycode: 0, text: 1, touch: 2, scroll: 3, backOrScreenOn: 4, startApp: 16, resetVideo: 17, resizeDisplay: 21 };
 const POINTER_FINGER = 0xfffffffffffffffen; // SC_POINTER_ID_GENERIC_FINGER
 const u16fp = (f) => (f >= 1 ? 0xffff : Math.round(Math.max(0, f) * 0x10000));
 const i16fp = (f) => (f >= 1 ? 0x7fff : Math.round(Math.max(-1, f) * 0x8000));
@@ -94,6 +119,7 @@ const i16fp = (f) => (f >= 1 ? 0x7fff : Math.round(Math.max(-1, f) * 0x8000));
 //    | { type: 'keycode', action, keycode, metastate }
 //    | { type: 'text', text } | { type: 'backOrScreenOn', action } | { type: 'resetVideo' }
 //    | { type: 'resizeDisplay', width, height }   (a flex display's new size)
+//    | { type: 'startApp', package }   (on the display the pane shows)
 // x, y are in video pixels; width, height the video size they refer to.
 function encode(msg) {
   const position = (buf, at) => {
@@ -140,6 +166,10 @@ function encode(msg) {
       return Buffer.from([TYPE.backOrScreenOn, msg.action]);
     case 'resetVideo':
       return Buffer.from([TYPE.resetVideo]);
+    case 'startApp': {
+      if (!validPackage(msg.package)) throw new Error('bad package name');
+      return Buffer.concat([Buffer.from([TYPE.startApp, msg.package.length]), Buffer.from(msg.package)]);
+    }
     case 'resizeDisplay': {
       const buf = Buffer.alloc(5);
       buf[0] = TYPE.resizeDisplay;
@@ -316,4 +346,4 @@ class Mirror extends EventEmitter {
   }
 }
 
-module.exports = { validSerial, validDisplay, isFit, findAdb, findScrcpy, devices, encode, Mirror };
+module.exports = { validSerial, validDisplay, isFit, validPackage, findAdb, findScrcpy, devices, apps, encode, Mirror };
