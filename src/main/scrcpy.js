@@ -109,7 +109,7 @@ async function apps({ adb, version, server }, serial) {
 }
 
 // Control messages (client -> device), as scrcpy's app/src/control_msg.c writes them.
-const TYPE = { keycode: 0, text: 1, touch: 2, scroll: 3, backOrScreenOn: 4, startApp: 16, resetVideo: 17, resizeDisplay: 21 };
+const TYPE = { keycode: 0, text: 1, touch: 2, scroll: 3, backOrScreenOn: 4, uhidCreate: 12, uhidInput: 13, uhidDestroy: 14, startApp: 16, resetVideo: 17, resizeDisplay: 21 };
 const POINTER_FINGER = 0xfffffffffffffffen; // SC_POINTER_ID_GENERIC_FINGER
 const u16fp = (f) => (f >= 1 ? 0xffff : Math.round(Math.max(0, f) * 0x10000));
 const i16fp = (f) => (f >= 1 ? 0x7fff : Math.round(Math.max(-1, f) * 0x8000));
@@ -120,6 +120,7 @@ const i16fp = (f) => (f >= 1 ? 0x7fff : Math.round(Math.max(-1, f) * 0x8000));
 //    | { type: 'text', text } | { type: 'backOrScreenOn', action } | { type: 'resetVideo' }
 //    | { type: 'resizeDisplay', width, height }   (a flex display's new size)
 //    | { type: 'startApp', package }   (on the display the pane shows)
+//    | { type: 'uhidCreate', id, desc } | { type: 'uhidInput', id, data } | { type: 'uhidDestroy', id }
 // x, y are in video pixels; width, height the video size they refer to.
 function encode(msg) {
   const position = (buf, at) => {
@@ -170,6 +171,30 @@ function encode(msg) {
       if (!validPackage(msg.package)) throw new Error('bad package name');
       return Buffer.concat([Buffer.from([TYPE.startApp, msg.package.length]), Buffer.from(msg.package)]);
     }
+    case 'uhidCreate': {
+      // id, vendor and product ids (0), an empty name (the server says "scrcpy"),
+      // then the report descriptor.
+      const buf = Buffer.alloc(10 + msg.desc.length);
+      buf[0] = TYPE.uhidCreate;
+      buf.writeUInt16BE(msg.id, 1);
+      buf.writeUInt16BE(msg.desc.length, 8);
+      Buffer.from(msg.desc).copy(buf, 10);
+      return buf;
+    }
+    case 'uhidInput': {
+      const buf = Buffer.alloc(5 + msg.data.length);
+      buf[0] = TYPE.uhidInput;
+      buf.writeUInt16BE(msg.id, 1);
+      buf.writeUInt16BE(msg.data.length, 3);
+      Buffer.from(msg.data).copy(buf, 5);
+      return buf;
+    }
+    case 'uhidDestroy': {
+      const buf = Buffer.alloc(3);
+      buf[0] = TYPE.uhidDestroy;
+      buf.writeUInt16BE(msg.id, 1);
+      return buf;
+    }
     case 'resizeDisplay': {
       const buf = Buffer.alloc(5);
       buf[0] = TYPE.resizeDisplay;
@@ -181,6 +206,55 @@ function encode(msg) {
       throw new Error('unknown control message');
   }
 }
+
+// A captured pane's mouse and keyboard reach the device as a USB mouse and keyboard
+// (scrcpy's --mouse=uhid and --keyboard=uhid): the cursor shows on the device, and
+// every key, shortcuts included, is a physical key press. The report descriptors and
+// reports are those of scrcpy's app/src/hid/hid_keyboard.c and hid_mouse.c.
+const HID_KEYBOARD = 1;
+const HID_MOUSE = 2;
+const HID_KEYBOARD_DESC = [
+  0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, // Generic Desktop, Keyboard, Application
+  0x05, 0x07, 0x19, 0xe0, 0x29, 0xe7, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02, // 8 modifier bits
+  0x75, 0x08, 0x95, 0x01, 0x81, 0x01, // reserved byte
+  0x05, 0x08, 0x19, 0x01, 0x29, 0x05, 0x75, 0x01, 0x95, 0x05, 0x91, 0x02, 0x75, 0x03, 0x95, 0x01, 0x91, 0x01, // LEDs
+  0x05, 0x07, 0x19, 0x00, 0x29, 0x65, 0x15, 0x00, 0x25, 0x65, 0x75, 0x08, 0x95, 0x06, 0x81, 0x00, // 6 keys
+  0xc0,
+];
+const HID_MOUSE_DESC = [
+  0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x09, 0x01, 0xa1, 0x00, // Mouse, Pointer
+  0x05, 0x09, 0x19, 0x01, 0x29, 0x05, 0x15, 0x00, 0x25, 0x01, 0x95, 0x05, 0x75, 0x01, 0x81, 0x02, // 5 buttons
+  0x95, 0x01, 0x75, 0x03, 0x81, 0x01, // padding
+  0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x38, 0x15, 0x81, 0x25, 0x7f, 0x75, 0x08, 0x95, 0x03, 0x81, 0x06, // x, y, wheel
+  0x05, 0x0c, 0x0a, 0x38, 0x02, 0x15, 0x81, 0x25, 0x7f, 0x75, 0x08, 0x95, 0x01, 0x81, 0x06, // horizontal wheel
+  0xc0, 0xc0,
+];
+
+// KeyboardEvent.code -> HID usage (HID Usage Tables, Keyboard page). Modifiers are
+// 0xe0..0xe7 and go in the report's first byte.
+const HID_USAGE = (() => {
+  const map = {};
+  for (let i = 0; i < 26; i++) map[`Key${String.fromCharCode(65 + i)}`] = 0x04 + i;
+  for (let i = 1; i <= 9; i++) map[`Digit${i}`] = 0x1d + i;
+  map.Digit0 = 0x27;
+  for (let i = 1; i <= 12; i++) map[`F${i}`] = 0x39 + i;
+  for (let i = 1; i <= 9; i++) map[`Numpad${i}`] = 0x58 + i;
+  map.Numpad0 = 0x62;
+  const named = [
+    ['Enter', 0x28], ['Escape', 0x29], ['Backspace', 0x2a], ['Tab', 0x2b], ['Space', 0x2c], ['Minus', 0x2d],
+    ['Equal', 0x2e], ['BracketLeft', 0x2f], ['BracketRight', 0x30], ['Backslash', 0x31], ['Semicolon', 0x33],
+    ['Quote', 0x34], ['Backquote', 0x35], ['Comma', 0x36], ['Period', 0x37], ['Slash', 0x38], ['CapsLock', 0x39],
+    ['PrintScreen', 0x46], ['ScrollLock', 0x47], ['Pause', 0x48], ['Insert', 0x49], ['Home', 0x4a], ['PageUp', 0x4b],
+    ['Delete', 0x4c], ['End', 0x4d], ['PageDown', 0x4e], ['ArrowRight', 0x4f], ['ArrowLeft', 0x50],
+    ['ArrowDown', 0x51], ['ArrowUp', 0x52], ['NumLock', 0x53], ['NumpadDivide', 0x54], ['NumpadMultiply', 0x55],
+    ['NumpadSubtract', 0x56], ['NumpadAdd', 0x57], ['NumpadEnter', 0x58], ['NumpadDecimal', 0x63],
+    ['IntlBackslash', 0x64], ['ContextMenu', 0x65],
+    ['ControlLeft', 0xe0], ['ShiftLeft', 0xe1], ['AltLeft', 0xe2], ['MetaLeft', 0xe3],
+    ['ControlRight', 0xe4], ['ShiftRight', 0xe5], ['AltRight', 0xe6], ['MetaRight', 0xe7],
+  ];
+  for (const [code, usage] of named) map[code] = usage;
+  return map;
+})();
 
 // Resolves with the socket once the server answers on it. On a forward tunnel adb
 // accepts the connection even before the server listens, then drops it; the server
@@ -230,6 +304,15 @@ class Mirror extends EventEmitter {
     this.control = null;
     this.port = null;
     this.ended = false;
+    this.hid = null; // the captured mouse and keyboard's state, while captured
+    this.sdk = 0; // the device's Android API level
+  }
+
+  // Before Android 15 a USB mouse moves the pointer on the device's own screen only,
+  // so a new display captures just the keyboard (as scrcpy, which can tie the mouse
+  // to a new display only from Android 15 on).
+  get capturesMouse() {
+    return !validDisplay(this.options.display) || this.sdk >= 35;
   }
 
   start() {
@@ -239,6 +322,7 @@ class Mirror extends EventEmitter {
   async #start() {
     const adb = (...args) => run(this.adb, ['-s', this.serial, ...args], 30000);
     await adb('push', this.server, REMOTE_PATH);
+    this.sdk = Number((await adb('shell', 'getprop', 'ro.build.version.sdk')).trim()) || 0;
     const scid = Math.floor(Math.random() * 0x7fffffff).toString(16).padStart(8, '0');
     this.port = Number((await adb('forward', 'tcp:0', `localabstract:scrcpy_${scid}`)).trim());
     if (this.ended) return this.#cleanup();
@@ -323,6 +407,72 @@ class Mirror extends EventEmitter {
 
   send(msg) {
     if (this.control && !this.control.destroyed) this.control.write(encode(msg));
+  }
+
+  // Captures (adds a USB keyboard to the device, and a mouse if capturesMouse) or
+  // releases (lets go of every key and button, and removes them, so the on-screen
+  // keyboard comes back).
+  capture(on) {
+    if (on && !this.hid) {
+      const mouse = this.capturesMouse;
+      this.send({ type: 'uhidCreate', id: HID_KEYBOARD, desc: HID_KEYBOARD_DESC });
+      if (mouse) this.send({ type: 'uhidCreate', id: HID_MOUSE, desc: HID_MOUSE_DESC });
+      this.hid = { mouse, keys: new Set(), mods: 0, buttons: 0, wheel: 0, hwheel: 0 };
+    } else if (!on && this.hid) {
+      this.send({ type: 'uhidInput', id: HID_KEYBOARD, data: new Array(8).fill(0) });
+      this.send({ type: 'uhidDestroy', id: HID_KEYBOARD });
+      if (this.hid.mouse) {
+        this.send({ type: 'uhidInput', id: HID_MOUSE, data: new Array(5).fill(0) });
+        this.send({ type: 'uhidDestroy', id: HID_MOUSE });
+      }
+      this.hid = null;
+    }
+  }
+
+  // A key (KeyboardEvent.code) going down or up on the captured keyboard.
+  hidKey(code, down) {
+    const usage = HID_USAGE[code];
+    if (!this.hid || usage === undefined) return;
+    if (usage >= 0xe0) {
+      const bit = 1 << (usage - 0xe0);
+      this.hid.mods = down ? this.hid.mods | bit : this.hid.mods & ~bit;
+    } else if (down) {
+      this.hid.keys.add(usage);
+    } else {
+      this.hid.keys.delete(usage);
+    }
+    // More than 6 keys at once reports the rollover error, as a real keyboard does.
+    const keys = [...this.hid.keys];
+    const slots = keys.length > 6 ? new Array(6).fill(1) : [...keys, 0, 0, 0, 0, 0, 0].slice(0, 6);
+    this.send({ type: 'uhidInput', id: HID_KEYBOARD, data: [this.hid.mods, 0, ...slots] });
+  }
+
+  // The captured mouse: buttons as MouseEvent.buttons (whose bits match HID's),
+  // movement in pixels, wheel and hwheel in notches (up and right are positive).
+  hidMouse({ buttons = this.hid?.buttons ?? 0, dx = 0, dy = 0, wheel = 0, hwheel = 0 }) {
+    if (!this.hid?.mouse) return;
+    this.hid.buttons = buttons & 0x1f;
+    // Fractions of a notch add up until they make a whole one.
+    this.hid.wheel += wheel;
+    this.hid.hwheel += hwheel;
+    const notch = (v) => Math.trunc(Math.max(-127, Math.min(127, v)));
+    const v = notch(this.hid.wheel);
+    const h = notch(this.hid.hwheel);
+    this.hid.wheel -= v;
+    this.hid.hwheel -= h;
+    // A report moves at most 127 pixels each way; longer moves take several.
+    let x = Math.round(dx);
+    let y = Math.round(dy);
+    let first = true;
+    while (first || x || y) {
+      const sx = Math.max(-127, Math.min(127, x));
+      const sy = Math.max(-127, Math.min(127, y));
+      const data = [this.hid.buttons, sx & 0xff, sy & 0xff, first ? v & 0xff : 0, first ? h & 0xff : 0];
+      this.send({ type: 'uhidInput', id: HID_MOUSE, data });
+      x -= sx;
+      y -= sy;
+      first = false;
+    }
   }
 
   stop() {

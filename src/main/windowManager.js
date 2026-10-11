@@ -149,6 +149,22 @@ class WindowManager extends EventEmitter {
         console.warn('scrcpy:input:', err.message);
       }
     });
+    // Ctrl+Shift+X in a device pane: its mouse and keyboard become a USB mouse and
+    // keyboard on the device, or stop being one.
+    ipcMain.on('scrcpy:capture', (event, paneId, on) => {
+      const pane = this.#pane(event, paneId);
+      if (pane?.kind === 'scrcpy') pane.mirror?.capture(Boolean(on));
+    });
+    ipcMain.on('scrcpy:hid-key', (event, paneId, code, down) => {
+      const pane = this.#pane(event, paneId);
+      if (pane?.kind === 'scrcpy' && typeof code === 'string') pane.mirror?.hidKey(code, Boolean(down));
+    });
+    ipcMain.on('scrcpy:hid-mouse', (event, paneId, motion) => {
+      const pane = this.#pane(event, paneId);
+      if (pane?.kind !== 'scrcpy' || typeof motion !== 'object' || !motion) return;
+      const num = (v) => (Number.isFinite(v) ? v : 0);
+      pane.mirror?.hidMouse({ buttons: num(motion.buttons), dx: num(motion.dx), dy: num(motion.dy), wheel: num(motion.wheel), hwheel: num(motion.hwheel) });
+    });
     // A flex display's pane changed size: resize the display to match.
     ipcMain.on('scrcpy:resize', (event, paneId, width, height) => {
       const pane = this.#pane(event, paneId);
@@ -336,7 +352,7 @@ class WindowManager extends EventEmitter {
     const panes = {};
     for (const p of term.panes.values()) {
       if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: `${p.app} ${p.instance} (${p.tag})` };
-      if (p.kind === 'scrcpy') panes[p.id] = { kind: 'scrcpy', status: p.status, fit: scrcpy.isFit(p.display) };
+      if (p.kind === 'scrcpy') panes[p.id] = { kind: 'scrcpy', status: p.status, fit: scrcpy.isFit(p.display), captureMouse: p.mirror?.capturesMouse ?? false };
     }
     term.win.webContents.send('layout', { layout: term.layout, active: term.activePane, panes });
   }

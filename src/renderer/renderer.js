@@ -173,9 +173,45 @@ async function main() {
       input({ type: 'keycode', action: 1, keycode, metastate });
     };
 
+    // Ctrl+Shift+X captures the mouse and keyboard: they become a USB mouse and
+    // keyboard on the device, the pointer is locked to the pane (its cursor shows on
+    // the device instead), and every key, shortcuts included, goes to the device.
+    // Ctrl+Shift+X again releases them, and so do losing the pointer lock, leaving the
+    // pane and the stream stopping. Where the
+    // device cannot put a USB mouse on the pane's display (a new display before
+    // Android 15), only the keyboard is captured and the mouse stays a finger.
+    let captured = false;
+    let captureMouse = false; // from the main process, which knows the device
+    let mouseCaptured = false;
+    const setCaptured = (on) => {
+      if (on === captured) return;
+      captured = on;
+      mouseCaptured = on && captureMouse;
+      window.terminal.scrcpyCapture(id, on);
+      if (mouseCaptured) {
+        Promise.resolve(canvas.requestPointerLock({ unadjustedMovement: true }))
+          .catch(() => canvas.requestPointerLock()) // without raw input, mouse acceleration applies
+          .catch((err) => console.warn('pointer lock:', err.message));
+      } else if (!on && document.pointerLockElement === canvas) {
+        document.exitPointerLock();
+      }
+    };
+    // Losing the lock releases; a lock that was never granted does not.
+    let pointerLocked = false;
+    document.addEventListener('pointerlockchange', () => {
+      if (captured && pointerLocked && document.pointerLockElement !== canvas) setCaptured(false);
+      pointerLocked = document.pointerLockElement === canvas;
+    });
+    canvas.addEventListener('blur', () => setCaptured(false));
+    const hidMouse = (e, extra = {}) => {
+      e.preventDefault();
+      window.terminal.scrcpyHidMouse(id, { buttons: e.buttons, dx: e.movementX || 0, dy: e.movementY || 0, ...extra });
+    };
+
     let touching = false;
     canvas.addEventListener('pointerdown', (e) => {
       canvas.focus();
+      if (mouseCaptured) return hidMouse(e);
       const pt = devicePoint(e);
       if (!pt?.inside) return;
       e.preventDefault();
@@ -195,10 +231,12 @@ async function main() {
       }
     });
     canvas.addEventListener('pointermove', (e) => {
+      if (mouseCaptured) return hidMouse(e);
       const pt = touching && devicePoint(e);
       if (pt) input({ type: 'touch', action: 2, x: pt.x, y: pt.y, pressure: 1 });
     });
     const lift = (e) => {
+      if (mouseCaptured) return hidMouse(e);
       if (!touching) return;
       touching = false;
       const pt = devicePoint(e);
@@ -208,12 +246,13 @@ async function main() {
     canvas.addEventListener('pointercancel', lift);
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     canvas.addEventListener('wheel', (e) => {
+      const notches = e.deltaMode === 0 ? 100 : e.deltaMode === 1 ? 3 : 1;
+      if (mouseCaptured) return hidMouse(e, { dx: 0, dy: 0, wheel: -e.deltaY / notches, hwheel: e.deltaX / notches });
       const pt = devicePoint(e);
       if (!pt?.inside) return;
       e.preventDefault();
-      const lines = e.deltaMode === 0 ? 100 : e.deltaMode === 1 ? 3 : 1;
       const clamp = (v) => Math.min(16, Math.max(-16, v));
-      input({ type: 'scroll', x: pt.x, y: pt.y, h: clamp(e.deltaX / lines), v: clamp(-e.deltaY / lines) });
+      input({ type: 'scroll', x: pt.x, y: pt.y, h: clamp(e.deltaX / notches), v: clamp(-e.deltaY / notches) });
     }, { passive: false });
 
     // Text goes in as text, so any layout and any character works; keys that are not
@@ -228,6 +267,17 @@ async function main() {
     const metaOf = (e) => (e.shiftKey ? 0x1 : 0) | (e.altKey ? 0x2 : 0) | (e.ctrlKey ? 0x1000 : 0) | (e.metaKey ? 0x10000 : 0);
     for (const type of ['keydown', 'keyup']) {
       canvas.addEventListener(type, (e) => {
+        if (e.ctrlKey && e.shiftKey && e.code === 'KeyX') {
+          e.preventDefault();
+          if (type === 'keydown' && !e.repeat) setCaptured(!captured);
+          return;
+        }
+        if (captured) {
+          // The device repeats a held key itself, as with a real keyboard.
+          e.preventDefault();
+          if (!e.repeat) window.terminal.scrcpyHidKey(id, e.code, type === 'keydown');
+          return;
+        }
         if (e.isComposing) return;
         const keycode = keycodeOf(e);
         if (keycode !== null) {
@@ -251,6 +301,7 @@ async function main() {
     new ResizeObserver(syncSize).observe(el);
 
     const update = (next) => {
+      captureMouse = Boolean(next.captureMouse);
       if (next.fit && !fit) {
         fit = true;
         syncSize();
@@ -259,6 +310,7 @@ async function main() {
       status.hidden = !next.status;
       canvas.hidden = Boolean(next.status);
       if (next.status) {
+        setCaptured(false);
         video = null;
         closeDecoder();
       }
@@ -272,7 +324,10 @@ async function main() {
       packet: onPacket,
       syncSize,
       focus: () => canvas.focus(),
-      dispose: closeDecoder,
+      dispose: () => {
+        setCaptured(false);
+        closeDecoder();
+      },
     };
     panes.set(id, p);
     window.terminal.scrcpyReady(id);
