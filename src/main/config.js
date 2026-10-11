@@ -17,6 +17,9 @@ const DEFAULTS = {
   tmux: null,
   screen: null,
   docker: null, // for linuxserver app panes (webtop, chromium, ...); null = find on $PATH
+  // For Android device panes; null = find on $PATH (adb also in the Android SDK).
+  adb: null,
+  scrcpy: null,
   fontSize: 16,
   width: null, // null = primary display width
   height: null, // null = primary display height

@@ -8,6 +8,7 @@ const { save: saveConfig } = require('./config');
 const layout = require('./layout');
 const mux = require('./mux');
 const ls = require('./linuxserver');
+const scrcpy = require('./scrcpy');
 
 // Where a dragged pane lands relative to the pane it is dropped on.
 const ZONES = {
@@ -19,11 +20,13 @@ const ZONES = {
 };
 
 // What a pane shows, as a source: null for a shell, { mux, name } for a multiplexer
-// session, { app, instance, tag } for a linuxserver app (e.g. chromium 0). A saved
-// pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g. { tmux: 'work' }),
-// or { linuxserver: app, name, tag }. { webtop: name, tag } is the older form for a
+// session, { app, instance, tag } for a linuxserver app (e.g. chromium 0), { device }
+// for an Android device's screen (its adb serial). A saved pane shape stores it as
+// its leaf: 'pane', { <mux>: name } (e.g. { tmux: 'work' }), { linuxserver: app,
+// name, tag } or { scrcpy: serial }. { webtop: name, tag } is the older form for a
 // webtop.
 const leafSource = (s) => {
+  if (scrcpy.validSerial(s?.scrcpy)) return { device: s.scrcpy };
   const app = s?.linuxserver ?? (s?.webtop !== undefined ? 'webtop' : undefined);
   const instance = s?.linuxserver ? s.name : s?.webtop;
   if (ls.validApp(app) && ls.validName(instance)) return { app, instance, tag: ls.validTag(s.tag) ? s.tag : 'latest' };
@@ -32,8 +35,9 @@ const leafSource = (s) => {
 };
 const isLeaf = (s) => s === 'pane' || leafSource(s) !== null;
 const paneLeaf = (p) =>
-  p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
+  p.device ? { scrcpy: p.device } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
 const sameSource = (p, source) =>
+  (p.device ?? null) === (source?.device ?? null) &&
   p.app === (source?.app ?? null) && p.instance === (source?.instance ?? null) &&
   p.mux === (source?.mux ?? null) && p.session === (source?.name ?? null);
 
@@ -48,6 +52,8 @@ class WindowManager extends EventEmitter {
     //     mux and session name the session it is attached to (see mux.js), or are null.
     //   kind 'web': { app, instance, tag, url, error } shows a linuxserver app, e.g.
     //     webtop or chromium (see linuxserver.js); url is null until it answers.
+    //   kind 'scrcpy': { device, model, mirror, status, video, config } shows an
+    //     Android device's screen (see scrcpy.js); the window decodes the stream.
     this.terminals = new Map();
     this.saveTimer = null;
     this.planner = null; // the layout planner window, while open
@@ -56,6 +62,9 @@ class WindowManager extends EventEmitter {
     this.sessions = new Map(); // mux -> Map(session name -> target), as last listed
     this.docker = mux.find('docker', config.docker);
     this.apps = { images: [], containers: [] }; // linuxserver apps as last listed
+    this.adb = scrcpy.findAdb(config.adb);
+    this.devices = []; // Android devices as last listed: [{ serial, model }]
+    this.scrcpyTools = null; // the installed scrcpy's { version, server }, once found
     this.quitting = false;
     app.on('before-quit', () => { this.quitting = true; });
     // systemd stops the service with SIGTERM. Quit through the app so the locked
@@ -112,6 +121,24 @@ class WindowManager extends EventEmitter {
       pane.ready = true;
       if (pane.pending) event.sender.send('pty:data', pane.id, pane.pending);
       pane.pending = '';
+    });
+    // A device pane's decoder is listening: send it the video size and ask the device
+    // for a fresh key frame, which a decoder needs to start.
+    ipcMain.on('scrcpy:ready', (event, paneId) => {
+      const pane = this.#pane(event, paneId);
+      if (pane?.kind !== 'scrcpy') return;
+      pane.ready = true;
+      if (pane.video) event.sender.send('scrcpy:session', pane.id, pane.video);
+      pane.mirror?.send({ type: 'resetVideo' });
+    });
+    ipcMain.on('scrcpy:input', (event, paneId, msg) => {
+      const pane = this.#pane(event, paneId);
+      if (pane?.kind !== 'scrcpy' || !pane.video) return;
+      try {
+        pane.mirror?.send({ ...msg, width: pane.video.width, height: pane.video.height });
+      } catch (err) {
+        console.warn('scrcpy:input:', err.message);
+      }
     });
     ipcMain.on('pane:focus', (event, paneId) => {
       const term = this.#fromSender(event);
@@ -212,7 +239,7 @@ class WindowManager extends EventEmitter {
   #paneList(term) {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
-      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, pid: p.pty?.pid ?? null };
+      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, device: p.device ?? null, model: p.model ?? null, pid: p.pty?.pid ?? null };
     });
   }
 
@@ -224,6 +251,8 @@ class WindowManager extends EventEmitter {
       muxes: [...this.muxes.keys()].map((m) => ({ id: m, sessions: [...(this.sessions.get(m)?.keys() ?? [])] })),
       // Pulled linuxserver app images and the app's containers, or null without docker.
       linuxserver: this.docker ? this.apps : null,
+      // Connected Android devices, or null without adb.
+      android: this.adb ? this.devices : null,
       windows: [...this.terminals.values()]
         .filter((t) => !t.closed && !t.win.isDestroyed())
         .map((t) => ({ id: t.id, focused: t.win.isFocused(), locked: t.locked, layout: t.layout, active: t.activePane, panes: this.#paneList(t) })),
@@ -236,6 +265,7 @@ class WindowManager extends EventEmitter {
     const panes = {};
     for (const p of term.panes.values()) {
       if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: `${p.app} ${p.instance} (${p.tag})` };
+      if (p.kind === 'scrcpy') panes[p.id] = { kind: 'scrcpy', status: p.status };
     }
     term.win.webContents.send('layout', { layout: term.layout, active: term.activePane, panes });
   }
@@ -324,41 +354,111 @@ class WindowManager extends EventEmitter {
     return id;
   }
 
+  // A device pane mirrors the device's screen for as long as the pane exists. When
+  // the device is not connected, or the stream stops (a cable pulled, the server
+  // killed), the pane says so and tries again every few seconds.
+  #spawnScrcpyPane(term, { device }) {
+    const id = crypto.randomUUID();
+    const model = this.devices.find((d) => d.serial === device)?.model ?? device;
+    const pane = { id, kind: 'scrcpy', device, model, mirror: null, retry: null, status: `Connecting to ${model}…`, video: null, ready: false, mux: null, session: null, app: null, instance: null, title: model, process: 'scrcpy', exited: false };
+    term.panes.set(id, pane);
+    const send = (channel, ...args) => {
+      if (pane.ready && !term.win.isDestroyed()) term.win.webContents.send(channel, id, ...args);
+    };
+    const setStatus = (status) => {
+      if (pane.exited || pane.status === status) return;
+      pane.status = status;
+      this.#sendLayout(term);
+    };
+    const retry = (status) => {
+      setStatus(status);
+      pane.retry = setTimeout(connect, 3000);
+    };
+    const connect = async () => {
+      pane.retry = null;
+      if (pane.exited) return;
+      if (!this.adb) return setStatus('adb is not installed');
+      try {
+        this.scrcpyTools ??= await scrcpy.findScrcpy(this.config.scrcpy);
+      } catch (err) {
+        return setStatus(err.message);
+      }
+      await this.refreshSessions();
+      if (pane.exited) return;
+      if (!this.devices.some((d) => d.serial === device)) return retry(`Waiting for ${pane.model === device ? device : `${pane.model} (${device})`}…`);
+      const mirror = new scrcpy.Mirror({ adb: this.adb, ...this.scrcpyTools }, device);
+      pane.mirror = mirror;
+      mirror.on('name', (name) => {
+        pane.model = pane.title = name;
+        this.#changed();
+      });
+      mirror.on('session', (video) => {
+        pane.video = video;
+        send('scrcpy:session', video);
+        setStatus(null);
+      });
+      mirror.on('packet', (packet) => send('scrcpy:packet', packet));
+      mirror.on('end', (err) => {
+        if (pane.mirror === mirror) pane.mirror = null;
+        pane.video = null;
+        if (pane.exited) return;
+        console.warn(`scrcpy ${device}:`, err?.message);
+        retry(`${pane.model}: ${err?.message ?? 'stopped'}. Trying again…`);
+      });
+      mirror.start();
+    };
+    connect();
+    return id;
+  }
+
   #makePane(term, source) {
+    if (source?.device) return this.#spawnScrcpyPane(term, source);
     return source?.app ? this.#spawnWebPane(term, source) : this.#spawnPane(term, source);
   }
 
   // A shell's pty is killed, and its exit removes the pane. A multiplexer client
-  // only detaches; an app's container keeps running.
+  // only detaches; an app's container keeps running. A device's mirror stops.
   #endPane(pane) {
     if (pane.pty) pane.pty.kill();
     pane.exited = true;
+    clearTimeout(pane.retry);
+    pane.mirror?.stop();
   }
 
-  // Lists every installed multiplexer's sessions and the linuxserver apps. The
-  // planner shows them in each pane's menu.
+  // Lists every installed multiplexer's sessions, the linuxserver apps and the
+  // Android devices. The planner shows them in each pane's menu.
   async refreshSessions() {
-    const [lists, images, containers] = await Promise.all([
+    const [lists, images, containers, devices] = await Promise.all([
       Promise.all([...this.muxes].map(async ([m, bin]) => [m, await mux.list(m, bin)])),
       this.docker ? ls.images(this.docker) : [],
       this.docker ? ls.list(this.docker) : [],
+      this.adb ? scrcpy.devices(this.adb) : [],
     ]);
-    const next = { sessions: new Map(lists), apps: { images, containers } };
-    const key = ({ sessions, apps }) => JSON.stringify([[...sessions].map(([m, names]) => [m, [...names]]), apps]);
+    const next = { sessions: new Map(lists), apps: { images, containers }, devices };
+    const key = ({ sessions, apps, devices }) => JSON.stringify([[...sessions].map(([m, names]) => [m, [...names]]), apps, devices]);
     if (key(next) === key(this)) return;
     this.sessions = next.sessions;
     this.apps = next.apps;
+    this.devices = next.devices;
     if (this.#plannerOpen()) this.planner.webContents.send('planner:state', this.#plannerState());
   }
 
   // A planner menu choice: 'shell', '<mux>:new', '<mux>:<name>' (e.g. 'tmux:work'),
-  // 'ls:new:<app>:<tag>' (e.g. 'ls:new:chromium:latest') or 'ls:<app>:<instance>'.
+  // 'ls:new:<app>:<tag>' (e.g. 'ls:new:chromium:latest'), 'ls:<app>:<instance>' or
+  // 'scrcpy:<adb serial>'.
   // Returns a source (see leafSource). A new session or app instance gets the smallest
   // free number, like `ptmux new` and `tmux new`
   // without a name, skipping names that panes already use.
   async #resolveSource(source) {
     if (source === 'shell') return null;
     if (typeof source === 'string' && source.startsWith('ls:')) return this.#resolveApp(source.slice(3).split(':'));
+    if (typeof source === 'string' && source.startsWith('scrcpy:')) {
+      // Serials of devices on the network contain ':' themselves.
+      const device = source.slice('scrcpy:'.length);
+      if (!this.adb) throw new Error('adb is not installed');
+      if (!scrcpy.validSerial(device)) throw new Error('bad adb serial');
+      return { device };
+    }
     const [, m, name] = (typeof source === 'string' && source.match(/^([a-z]+):(.*)$/)) || [];
     if (!mux.MUXES[m]) throw new Error('unknown pane source');
     if (!this.muxes.has(m)) throw new Error(`${m} is not installed`);
@@ -459,7 +559,7 @@ class WindowManager extends EventEmitter {
     win.webContents.on('did-start-navigation', (details) => {
       if (!details.isMainFrame || details.isSameDocument) return;
       term.ready = false;
-      for (const pane of term.panes.values()) if (pane.pty) pane.ready = false;
+      for (const pane of term.panes.values()) if (pane.pty || pane.kind === 'scrcpy') pane.ready = false;
     });
     win.webContents.on('page-title-updated', (event, title) => {
       // xterm.js forwards the shell's OSC title; keep the window title stable for OBS.
@@ -522,6 +622,7 @@ class WindowManager extends EventEmitter {
           session: active?.session ?? null,
           app: active?.app ?? null,
           instance: active?.instance ?? null,
+          device: active?.device ?? null,
           x: b.x,
           y: b.y,
           width: b.width,
@@ -658,8 +759,8 @@ class WindowManager extends EventEmitter {
     return true;
   }
 
-  // Killing the shell removes the pane once it exits (see #spawnPane); a web pane has
-  // no process to wait for. Only a locked window can lose its last pane this way.
+  // Killing the shell removes the pane once it exits (see #spawnPane); a web or
+  // device pane has no process to wait for. Only a locked window can lose its last pane this way.
   closePane(id, paneId) {
     const term = this.get(id);
     const pane = term?.panes.get(paneId);

@@ -1,5 +1,12 @@
 const FONT_FAMILY = 'JetBrainsMono NL NFM';
 
+// Android key codes (android/keycodes.h) for keys that do not type text.
+const KEYCODES = {
+  Enter: 66, NumpadEnter: 66, Backspace: 67, Delete: 112, Tab: 61, Escape: 111, Space: 62,
+  ArrowUp: 19, ArrowDown: 20, ArrowLeft: 21, ArrowRight: 22,
+  Home: 122, End: 123, PageUp: 92, PageDown: 93, Insert: 124,
+};
+
 async function main() {
   const cfg = await window.terminal.getConfig();
   await Promise.all([
@@ -75,6 +82,190 @@ async function main() {
     return p;
   };
 
+  // An Android device's screen, from scrcpy's H.264 stream (see src/main/scrcpy.js).
+  // A canvas survives moves in the split tree, so unlike an iframe it lives in its slot.
+  // A left drag is a finger on the touchscreen, the wheel scrolls, the right button
+  // is Back and the middle button Home; typing goes to the device.
+  const createScrcpyPane = (id, info) => {
+    const el = document.createElement('div');
+    el.className = 'pane device';
+    const canvas = document.createElement('canvas');
+    canvas.tabIndex = 0;
+    const status = document.createElement('p');
+    el.append(canvas, status);
+    const ctx = canvas.getContext('2d');
+    let video = null; // { width, height } the device sends, which input positions refer to
+    let decoder = null;
+    let config = null; // SPS and PPS, sent again in front of every key frame
+    let keyFrame = false; // the decoder has had one since it was set up
+    let timestamp = 0;
+
+    const closeDecoder = () => {
+      if (decoder && decoder.state !== 'closed') decoder.close();
+      decoder = null;
+      keyFrame = false;
+    };
+    // Starts over from the next key frame, which the main process asks the device for.
+    const restart = () => {
+      closeDecoder();
+      window.terminal.scrcpyReady(id);
+    };
+    // "avc1.PPCCLL" from the SPS NAL unit: profile, constraint flags and level.
+    const codecOf = (data) => {
+      for (let i = 0; i + 6 < data.length; i++) {
+        if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1 && (data[i + 3] & 0x1f) === 7) {
+          return `avc1.${[...data.subarray(i + 4, i + 7)].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
+        }
+      }
+      return null;
+    };
+    const draw = (frame) => {
+      if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+        canvas.width = frame.displayWidth;
+        canvas.height = frame.displayHeight;
+      }
+      ctx.drawImage(frame, 0, 0);
+      frame.close();
+    };
+    const onPacket = ({ config: isConfig, key, data }) => {
+      if (isConfig) {
+        const codec = codecOf(data);
+        if (!codec) return;
+        closeDecoder();
+        config = data;
+        decoder = new VideoDecoder({
+          output: draw,
+          error: (err) => {
+            console.warn('scrcpy decoder:', err.message);
+            restart();
+          },
+        });
+        decoder.configure({ codec, optimizeForLatency: true });
+        return;
+      }
+      if (decoder?.state !== 'configured' || (!keyFrame && !key)) return;
+      // Frames pile up when decoding falls behind; skip to a fresh key frame.
+      if (decoder.decodeQueueSize > 30) return restart();
+      keyFrame = true;
+      let chunk = data;
+      if (key) {
+        chunk = new Uint8Array(config.length + data.length);
+        chunk.set(config);
+        chunk.set(data, config.length);
+      }
+      decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: timestamp++, data: chunk }));
+    };
+
+    // Where a pointer event lands on the device, in video pixels; the picture is
+    // letterboxed inside the canvas box (object-fit: contain).
+    const devicePoint = (e) => {
+      if (!video) return null;
+      const r = canvas.getBoundingClientRect();
+      const scale = Math.min(r.width / video.width, r.height / video.height);
+      const x = (e.clientX - r.left - (r.width - video.width * scale) / 2) / scale;
+      const y = (e.clientY - r.top - (r.height - video.height * scale) / 2) / scale;
+      const inside = x >= 0 && y >= 0 && x < video.width && y < video.height;
+      return { x: Math.min(Math.max(x, 0), video.width - 1), y: Math.min(Math.max(y, 0), video.height - 1), inside };
+    };
+    const input = (msg) => window.terminal.scrcpyInput(id, msg);
+    const pressKey = (keycode, metastate = 0) => {
+      input({ type: 'keycode', action: 0, keycode, metastate });
+      input({ type: 'keycode', action: 1, keycode, metastate });
+    };
+
+    let touching = false;
+    canvas.addEventListener('pointerdown', (e) => {
+      canvas.focus();
+      const pt = devicePoint(e);
+      if (!pt?.inside) return;
+      e.preventDefault();
+      if (e.button === 0) {
+        touching = true;
+        canvas.setPointerCapture(e.pointerId);
+        input({ type: 'touch', action: 0, x: pt.x, y: pt.y, pressure: 1 });
+      } else if (e.button === 2) {
+        input({ type: 'backOrScreenOn', action: 0 });
+        input({ type: 'backOrScreenOn', action: 1 });
+      } else if (e.button === 1) {
+        pressKey(3); // HOME
+      } else if (e.button === 3) {
+        pressKey(4); // BACK
+      } else if (e.button === 4) {
+        pressKey(187); // APP_SWITCH
+      }
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      const pt = touching && devicePoint(e);
+      if (pt) input({ type: 'touch', action: 2, x: pt.x, y: pt.y, pressure: 1 });
+    });
+    const lift = (e) => {
+      if (!touching) return;
+      touching = false;
+      const pt = devicePoint(e);
+      if (pt) input({ type: 'touch', action: 1, x: pt.x, y: pt.y, pressure: 0 });
+    };
+    canvas.addEventListener('pointerup', lift);
+    canvas.addEventListener('pointercancel', lift);
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('wheel', (e) => {
+      const pt = devicePoint(e);
+      if (!pt?.inside) return;
+      e.preventDefault();
+      const lines = e.deltaMode === 0 ? 100 : e.deltaMode === 1 ? 3 : 1;
+      const clamp = (v) => Math.min(16, Math.max(-16, v));
+      input({ type: 'scroll', x: pt.x, y: pt.y, h: clamp(e.deltaX / lines), v: clamp(-e.deltaY / lines) });
+    }, { passive: false });
+
+    // Text goes in as text, so any layout and any character works; keys that are not
+    // text, and shortcuts with Ctrl or Alt, go in as Android key codes.
+    const keycodeOf = (e) => {
+      if (e.code in KEYCODES) return KEYCODES[e.code];
+      if (!(e.ctrlKey || e.altKey || e.metaKey)) return null;
+      if (/^Key[A-Z]$/.test(e.code)) return 29 + e.code.charCodeAt(3) - 65; // A..Z
+      if (/^Digit[0-9]$/.test(e.code)) return 7 + Number(e.code[5]); // 0..9
+      return null;
+    };
+    const metaOf = (e) => (e.shiftKey ? 0x1 : 0) | (e.altKey ? 0x2 : 0) | (e.ctrlKey ? 0x1000 : 0) | (e.metaKey ? 0x10000 : 0);
+    for (const type of ['keydown', 'keyup']) {
+      canvas.addEventListener(type, (e) => {
+        if (e.isComposing) return;
+        const keycode = keycodeOf(e);
+        if (keycode !== null) {
+          e.preventDefault();
+          input({ type: 'keycode', action: type === 'keydown' ? 0 : 1, keycode, metastate: metaOf(e) });
+        } else if (type === 'keydown' && [...e.key].length === 1) {
+          e.preventDefault();
+          input({ type: 'text', text: e.key });
+        }
+      });
+    }
+    canvas.addEventListener('focus', onFocus(id));
+
+    const update = (next) => {
+      status.textContent = next.status ?? '';
+      status.hidden = !next.status;
+      canvas.hidden = Boolean(next.status);
+      if (next.status) {
+        video = null;
+        closeDecoder();
+      }
+    };
+    update(info);
+
+    const p = {
+      el,
+      update,
+      session: (v) => { video = v; },
+      packet: onPacket,
+      syncSize: () => {},
+      focus: () => canvas.focus(),
+      dispose: closeDecoder,
+    };
+    panes.set(id, p);
+    window.terminal.scrcpyReady(id);
+    return p;
+  };
+
   const createPane = (id) => {
     const el = document.createElement('div');
     el.className = 'pane';
@@ -122,10 +313,12 @@ async function main() {
   const build = (node, seen, info) => {
     if (node.type === 'pane') {
       seen.add(node.id);
-      const web = info[node.id];
+      const other = info[node.id]; // a web or device pane, which has no pty
       const p = panes.get(node.id);
-      if (p && web) p.update(web);
-      return (p || (web ? createWebPane(node.id, web) : createPane(node.id))).el;
+      if (p && other) p.update(other);
+      if (p) return p.el;
+      if (other?.kind === 'scrcpy') return createScrcpyPane(node.id, other).el;
+      return (other ? createWebPane(node.id, other) : createPane(node.id)).el;
     }
     const box = document.createElement('div');
     box.className = `split ${node.dir}`;
@@ -138,6 +331,8 @@ async function main() {
   };
 
   window.terminal.onData((id, data) => panes.get(id)?.term?.write(data));
+  window.terminal.onScrcpySession((id, video) => panes.get(id)?.session?.(video));
+  window.terminal.onScrcpyPacket((id, packet) => panes.get(id)?.packet?.(packet));
   window.terminal.onLayout((state) => {
     const seen = new Set();
     // A locked window with no panes shows just its background.

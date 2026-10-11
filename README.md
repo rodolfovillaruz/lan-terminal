@@ -55,6 +55,7 @@ On first run the app writes a config file to `~/.config/lan-terminal/config.json
 | `shellArgs` | `["-l"]` | Shell arguments (default starts a login shell) |
 | `ptmux` / `tmux` / `screen` | `null` | Paths to the multiplexers for session panes; `null` looks on `$PATH`, then in `~/.cargo/bin` |
 | `docker` | `null` | Path to docker, for linuxserver app panes; `null` looks on `$PATH` |
+| `adb` / `scrcpy` | `null` | Paths to adb and scrcpy, for Android device panes; `null` looks on `$PATH` (and for adb also in `$ANDROID_HOME` and `~/Android/Sdk`) |
 | `fontSize` | `16` | Font size |
 | `width` / `height` | `null` | Window size; `null` means the primary display's size |
 | `background` / `foreground` | `#000000` / `#e6e6e6` | Terminal colours |
@@ -70,7 +71,7 @@ Send `Authorization: Bearer <token>` on every request. You can also put `?token=
 
 | Method & path | Body | Action |
 |---|---|---|
-| `GET /windows` | | List windows: `id, title, process, mux, session, app, instance, x, y, width, height, moveMode, alwaysOnTop, focused, minimized, pid, panes`; `mux` (`ptmux`, `tmux` or `screen`) and `session` name the active pane's session, or are `null` for a shell; `app` and `instance` name the active pane's linuxserver app (`chromium`, `0`), or are `null` |
+| `GET /windows` | | List windows: `id, title, process, mux, session, app, instance, x, y, width, height, moveMode, alwaysOnTop, focused, minimized, pid, panes`; `mux` (`ptmux`, `tmux` or `screen`) and `session` name the active pane's session, or are `null` for a shell; `app` and `instance` name the active pane's linuxserver app (`chromium`, `0`), or are `null`; `device` is the adb serial of the active pane's Android device, or `null` |
 | `POST /windows` | | Open a new terminal window; returns `{id}` (a UUID) |
 | `POST /windows/:id/move-mode` | `{"enabled": true\|false}` | Turn move mode on or off |
 | `POST /windows/:id/always-on-top` | `{"enabled": true\|false}` | Keep the window above everything (covering the panel) and hide it from the taskbar and Alt+Tab |
@@ -103,6 +104,8 @@ docker rm -f lan-terminal-chromium-0 && docker volume rm lan-terminal-chromium-0
 ```
 
 Each running app holds from several hundred MB (one app) to a few GB (a desktop) of memory, so stop the ones you aren't using.
+
+The menu also lists each connected **Android device** (`adb devices`) by its model name. Its pane shows the phone's screen through [scrcpy](https://github.com/Genymobile/scrcpy): the app starts the server that ships with the installed scrcpy (`<prefix>/share/scrcpy/scrcpy-server`, or `$SCRCPY_SERVER_PATH`), reads the H.264 stream and draws it inside the pane, so no scrcpy window opens and the screen shows up in a window capture. Dragging with the left button is a finger on the touchscreen, the wheel scrolls, the right button is Back, the middle button Home, and the back and forward mouse buttons are Back and the app switcher. Typing goes to the device: text as text, and Enter, arrows, Backspace and Ctrl/Alt shortcuts as Android keys. There is no audio. Unlike a session, the mirror ends with its pane. A pane whose device is not connected, or whose stream stops, says so and tries again every few seconds, so a saved layout picks the phone up once it is plugged in or paired.
 
 **Move mode** puts a blue overlay over the window. Drag anywhere on it to move the window, including above the top of the screen. While the overlay is up, typing does not reach the shell. Press Esc or call `move-mode` with `{"enabled": false}` to turn it off.
 

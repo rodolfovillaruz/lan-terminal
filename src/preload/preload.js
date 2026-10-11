@@ -7,6 +7,11 @@ contextBridge.exposeInMainWorld('terminal', {
   write: (paneId, data) => ipcRenderer.send('pty:input', paneId, data),
   resize: (paneId, cols, rows) => ipcRenderer.send('pty:resize', paneId, cols, rows),
   focusPane: (paneId) => ipcRenderer.send('pane:focus', paneId),
+  // Android device panes: the video stream in, touch and key events out.
+  scrcpyReady: (paneId) => ipcRenderer.send('scrcpy:ready', paneId),
+  scrcpyInput: (paneId, msg) => ipcRenderer.send('scrcpy:input', paneId, msg),
+  onScrcpySession: (cb) => ipcRenderer.on('scrcpy:session', (_e, paneId, video) => cb(paneId, video)),
+  onScrcpyPacket: (cb) => ipcRenderer.on('scrcpy:packet', (_e, paneId, packet) => cb(paneId, packet)),
   onData: (cb) => ipcRenderer.on('pty:data', (_e, paneId, data) => cb(paneId, data)),
   onLayout: (cb) => ipcRenderer.on('layout', (_e, state) => cb(state)),
   onMoveMode: (cb) => ipcRenderer.on('moveMode', (_e, enabled) => cb(enabled)),

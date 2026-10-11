@@ -190,14 +190,16 @@ function dropZone(el, e) {
   return edges.sort((a, b) => a[1] - b[1])[0][0];
 }
 
-// A pane's program: "tmux work", "ptmux 2", "chromium 0", "bash", "vim".
+// A pane's program: "tmux work", "ptmux 2", "chromium 0", "Pixel 8", "bash", "vim".
 function paneName(info) {
+  if (info.device) return info.model ?? info.device;
   if (info.app) return `${info.app} ${info.instance}`;
   return info.session ? `${info.mux} ${info.session}` : info.process;
 }
 
 // The pane's menu value (see sourceMenu).
 function paneSource(info) {
+  if (info.device) return `scrcpy:${info.device}`;
   if (info.app) return `ls:${info.app}:${info.instance}`;
   return info.session ? `${info.mux}:${info.session}` : 'shell';
 }
@@ -210,7 +212,8 @@ function paneLabel(info) {
 
 // The menu that picks what a pane shows: a shell, for each installed multiplexer
 // (ptmux, tmux, screen) a running session or a new one, or a linuxserver app such
-// as webtop or chromium (an existing container or a new one from a pulled image).
+// as webtop or chromium (an existing container or a new one from a pulled image), or
+// the screen of a connected Android device (through scrcpy).
 // current is the pane's choice ('shell', '<mux>:<name>' or 'ls:<app>:<instance>'),
 // or null for a placeholder (an empty
 // window).
@@ -294,6 +297,15 @@ function fillSourceMenu(select, current, st) {
     for (const { app, tag } of st.linuxserver.images) {
       option(group, `ls:new:${app}:${tag}`, tag === 'latest' ? `New ${app}` : `New ${app} (${tag})`);
     }
+    if (group.children.length) select.appendChild(group);
+  }
+  if (st.android) {
+    const group = document.createElement('optgroup');
+    group.label = 'Android (scrcpy)';
+    const devices = new Map(st.android.map((d) => [`scrcpy:${d.serial}`, d.model]));
+    // The pane's own device, even while it is disconnected.
+    if (current?.startsWith('scrcpy:') && !devices.has(current)) devices.set(current, `${current.slice(7)} (not connected)`);
+    for (const [value, model] of devices) option(group, value, model);
     if (group.children.length) select.appendChild(group);
   }
   select.value = current ?? '';
