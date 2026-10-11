@@ -35,6 +35,17 @@ f = L.removePane(f, 'y');
 assert.strictEqual(f.dir, 'row');
 assert.deepStrictEqual(L.leaves(f), ['x', 'z', 'w']);
 
+// The neighbor before a removed pane (or after, for the first) takes its place and space.
+let r = L.splitPane(L.pane('a'), 'a', 'row', 'b');
+r = L.splitPane(r, 'b', 'row', 'c');
+r = L.splitPane(r, 'b', 'col', 'd'); // row: [a, col[b, d], c]
+assert.strictEqual(L.heir(r, 'c'), 'd');
+assert.strictEqual(L.heir(r, 'a'), 'b');
+assert.strictEqual(L.heir(r, 'd'), 'b');
+const rc = L.removePane(r, 'c');
+assert.deepStrictEqual(rc.sizes, [0.5, 0.5]);
+assert.strictEqual(L.heir(L.pane('a'), 'a'), null);
+
 // Sizes are clamped and normalized.
 t = L.setSizes(t, [], [0, 1, 1]);
 assert.ok(t.sizes[0] > 0 && Math.abs(t.sizes.reduce((x, y) => x + y) - 1) < 1e-9);

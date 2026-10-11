@@ -63,14 +63,19 @@ function removePane(tree, paneId) {
   if (tree.type === 'pane') return tree.id === paneId ? null : tree;
   const kept = [];
   const sizes = [];
+  let freed = null;
   tree.children.forEach((child, i) => {
     const next = removePane(child, paneId);
     if (next) {
       kept.push(next);
       sizes.push(tree.sizes[i]);
+    } else {
+      freed = { at: kept.length, size: tree.sizes[i] };
     }
   });
   if (kept.length === 0) return null;
+  // The pane's space goes to the neighbor that takes its place (see heir()).
+  if (freed) sizes[freed.at > 0 ? freed.at - 1 : 0] += freed.size;
   if (kept.length === 1) return kept[0];
   // A nested split in the same direction folds into its parent.
   const children = [];
@@ -87,6 +92,22 @@ function removePane(tree, paneId) {
     }
   });
   return { ...tree, children, sizes: normalize(flatSizes) };
+}
+
+// The pane that takes over paneId's space when it is removed: the nearest pane of
+// the sibling before it, or of the sibling after it when it is the first child.
+function heir(tree, paneId) {
+  if (tree.type === 'pane') return null;
+  const i = tree.children.findIndex((c) => c.type === 'pane' && c.id === paneId);
+  if (i >= 0) {
+    if (i > 0) return leaves(tree.children[i - 1]).at(-1);
+    return leaves(tree.children[1])[0];
+  }
+  for (const child of tree.children) {
+    const found = heir(child, paneId);
+    if (found) return found;
+  }
+  return null;
 }
 
 function swapPanes(tree, a, b) {
@@ -139,4 +160,4 @@ function hydrate(saved, makeId) {
   return build(saved);
 }
 
-module.exports = { pane, leaves, splitPane, removePane, swapPanes, setSizes, shape, hydrate };
+module.exports = { pane, leaves, splitPane, removePane, heir, swapPanes, setSizes, shape, hydrate };

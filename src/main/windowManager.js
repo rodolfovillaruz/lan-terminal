@@ -210,13 +210,14 @@ class WindowManager extends EventEmitter {
   #removePane(term, paneId) {
     if (term.closed || !term.panes.has(paneId)) return;
     term.panes.delete(paneId);
+    const heir = layout.heir(term.layout, paneId);
     const next = layout.removePane(term.layout, paneId);
     if (!next) {
       if (!term.win.isDestroyed()) term.win.close();
       return;
     }
     term.layout = next;
-    if (term.activePane === paneId) term.activePane = layout.leaves(next)[0];
+    if (term.activePane === paneId) term.activePane = heir;
     this.#pushLayout(term);
   }
 
