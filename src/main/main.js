@@ -40,7 +40,7 @@ function start() {
     windows = new WindowManager(cfg);
     tray = createTray(cfg, windows);
     startApi(cfg, windows);
-    windows.create();
+    windows.create({ layout: cfg.layout });
     console.log(`Config: ${config.CONFIG_PATH}`);
   });
 }

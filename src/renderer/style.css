@@ -33,10 +33,24 @@ html, body {
 #terminal {
   position: absolute;
   inset: 0;
-  padding: 6px;
+  display: flex;
   /* Keep xterm's z-indexed layers below the move overlay so it gets the pointer. */
   isolation: isolate;
 }
+
+/* Pane layout: nested flex boxes built from the main process's split tree. */
+.split { display: flex; min-width: 0; min-height: 0; }
+.split.row { flex-direction: row; }
+.split.col { flex-direction: column; }
+.pane {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px;
+  overflow: hidden;
+}
+.split.row > * + * { border-left: 1px solid rgba(230, 230, 230, 0.18); }
+.split.col > * + * { border-top: 1px solid rgba(230, 230, 230, 0.18); }
 
 /* No visible scrollbar in the captured image; scrollback still works with the wheel. */
 .xterm .xterm-viewport { scrollbar-width: none; }

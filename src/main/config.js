@@ -18,6 +18,7 @@ const DEFAULTS = {
   background: '#000000',
   foreground: '#e6e6e6',
   presenterMode: true, // move mode shows only the move cursor, no overlay or hint
+  layout: null, // pane split shape of the startup window; saved from the layout planner
 };
 
 function load() {
