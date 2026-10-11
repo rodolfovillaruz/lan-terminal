@@ -138,6 +138,8 @@ class WindowManager extends EventEmitter {
       if (pane?.kind !== 'scrcpy') return;
       pane.ready = true;
       if (pane.video) event.sender.send('scrcpy:session', pane.id, pane.video);
+      // Opus packets decode on their own once the decoder has the OpusHead.
+      if (pane.audioConfig) event.sender.send('scrcpy:audio', pane.id, { config: true, data: pane.audioConfig });
       pane.mirror?.send({ type: 'resetVideo' });
     });
     ipcMain.on('scrcpy:input', (event, paneId, msg) => {
@@ -475,7 +477,12 @@ class WindowManager extends EventEmitter {
       await this.refreshSessions();
       if (pane.exited) return;
       if (!this.devices.some((d) => d.serial === device)) return retry(`Waiting for ${pane.model === device ? device : `${pane.model} (${device})`}…`);
+      // A device has one sound, so only one of its panes plays it.
+      const audio = this.config.scrcpyAudio !== false &&
+        ![...this.terminals.values()].some((t) => [...t.panes.values()].some((p) => p !== pane && p.device === device && p.mirror?.options.audio));
       const mirror = new scrcpy.Mirror({ adb: this.adb, ...this.scrcpyTools }, device, {
+        audio,
+        audioDup: this.config.scrcpyAudioDup,
         display,
         fitSize: pane.fitSize,
         keepApps: this.config.scrcpyKeepApps,
@@ -501,8 +508,14 @@ class WindowManager extends EventEmitter {
         setStatus(null);
       });
       mirror.on('packet', (packet) => send('scrcpy:packet', packet));
+      mirror.on('audio', (packet) => {
+        if (packet.config) pane.audioConfig = packet.data;
+        send('scrcpy:audio', packet);
+      });
+      mirror.on('audio-off', (reason) => console.warn(`scrcpy ${device}: no sound: ${reason}`));
       mirror.on('end', (err) => {
         if (pane.mirror === mirror) pane.mirror = null;
+        pane.audioConfig = null;
         pane.video = null;
         if (pane.exited) return;
         console.warn(`scrcpy ${device}:`, err?.message);
@@ -651,6 +664,8 @@ class WindowManager extends EventEmitter {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        // A device pane plays the device's sound without a click first.
+        autoplayPolicy: 'no-user-gesture-required',
       },
     });
     win.setMenu(null);

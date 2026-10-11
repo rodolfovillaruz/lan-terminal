@@ -284,12 +284,15 @@ function connect(port, deadline, cancelled) {
 }
 
 // One device's screen, or with options.display a new virtual display on it (see
-// validDisplay); options.fitSize is a flex display's first size, options.keepApps
+// validDisplay), and with options.audio its sound (options.audioDup keeps it playing
+// on the device too); options.fitSize is a flex display's first size, options.keepApps
 // moves the apps on a new display to the main screen when it closes, and
 // options.imePolicy is 'local', 'fallback' or 'hide' (where the keyboard shows).
 // Emits 'name' (device name), 'session' ({ width, height },
 // again on every rotation), 'packet' ({ config, key, data }) and once 'end' (an
-// Error, or null after stop()). A failed start() ends it too, so 'end' is the one
+// Error, or null after stop()). With audio it also emits 'audio' ({ config, data },
+// Opus packets, the first one the OpusHead) and 'audio-off' (a reason) if the device
+// does not send its sound. A failed start() ends it too, so 'end' is the one
 // place to learn that it stopped.
 class Mirror extends EventEmitter {
   constructor({ adb, version, server }, serial, options = {}) {
@@ -301,6 +304,7 @@ class Mirror extends EventEmitter {
     this.serial = serial;
     this.proc = null;
     this.video = null;
+    this.audio = null;
     this.control = null;
     this.port = null;
     this.ended = false;
@@ -329,7 +333,9 @@ class Mirror extends EventEmitter {
 
     this.proc = spawn(this.adb, [
       '-s', this.serial, 'shell', `CLASSPATH=${REMOTE_PATH}`, 'app_process', '/', 'com.genymobile.scrcpy.Server', this.version,
-      `scid=${scid}`, 'log_level=info', 'tunnel_forward=true', 'audio=false', 'video_codec=h264',
+      `scid=${scid}`, 'log_level=info', 'tunnel_forward=true', 'video_codec=h264',
+      ...(this.options.audio ? ['audio_codec=opus'] : ['audio=false']),
+      ...(this.options.audio && this.options.audioDup ? ['audio_source=playback', 'audio_dup=true'] : []),
       ...this.#displayArgs(),
     ]);
     // The last line the server printed explains why it stopped.
@@ -342,16 +348,37 @@ class Mirror extends EventEmitter {
     this.proc.stderr.on('data', log);
     this.proc.on('exit', () => this.#end(new Error(last || 'the scrcpy server stopped')));
 
-    // The video socket first, then the control socket.
+    // The video socket first, then the audio socket, then the control socket.
     this.video = await connect(this.port, Date.now() + 10000, () => this.ended);
+    if (this.options.audio) {
+      this.audio = net.connect(this.port, '127.0.0.1');
+      this.audio.on('error', () => {});
+    }
     this.control = net.connect(this.port, '127.0.0.1');
     this.control.on('error', () => {});
     this.control.on('data', () => {}); // device messages (clipboard, ...) are not used
     this.video.on('error', () => {});
     this.video.on('close', () => this.#end(new Error('the video stream ended')));
     if (this.ended) return this.#cleanup();
-    this.#read();
+    this.#read(this.video, {
+      name: true,
+      codec: (codec) => codec === 'h264' || this.#end(new Error(`unexpected video codec ${codec}`)),
+      session: (size) => this.emit('session', size),
+      packet: (packet) => this.emit('packet', packet),
+    });
     this.video.resume();
+    // Sound is extra: without it (Android 10 or older, or another capture holding it)
+    // the screen still mirrors.
+    if (this.audio) {
+      this.#read(this.audio, {
+        codec: (codec) => {
+          if (codec === 'opus') return true;
+          this.emit('audio-off', codec === '\0\0\0\0' ? 'the device does not share its sound' : 'the device could not capture its sound');
+          return false;
+        },
+        packet: ({ config, data }) => this.emit('audio', { config, data }),
+      });
+    }
   }
 
   #displayArgs() {
@@ -368,11 +395,14 @@ class Mirror extends EventEmitter {
     return args;
   }
 
-  // Device name, codec id, then session and media packets (scrcpy's doc/develop.md).
-  #read() {
+  // The device name (on the first socket only), the codec id ("h264", "opus", or 0
+  // for a stream the device turned off and 1 for one that failed), then session
+  // packets (video only) and media packets (scrcpy's doc/develop.md). codec returns
+  // whether to go on reading.
+  #read(socket, { name = false, codec, session, packet }) {
     let buf = Buffer.alloc(0);
-    let stage = 'name';
-    this.video.on('data', (chunk) => {
+    let stage = name ? 'name' : 'codec';
+    socket.on('data', (chunk) => {
       buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
       for (;;) {
         if (stage === 'name') {
@@ -382,14 +412,18 @@ class Mirror extends EventEmitter {
           stage = 'codec';
         } else if (stage === 'codec') {
           if (buf.length < 4) return;
-          const codec = buf.subarray(0, 4).toString('latin1');
-          if (codec !== 'h264') return this.#end(new Error(`unexpected video codec ${codec}`));
+          if (!codec(buf.subarray(0, 4).toString('latin1'))) {
+            stage = 'off';
+            return;
+          }
           buf = buf.subarray(4);
           stage = 'packets';
+        } else if (stage === 'off') {
+          return;
         } else {
           if (buf.length < HEADER) return;
           if (buf[0] & 0x80) {
-            this.emit('session', { width: buf.readUInt32BE(4), height: buf.readUInt32BE(8) });
+            session?.({ width: buf.readUInt32BE(4), height: buf.readUInt32BE(8) });
             buf = buf.subarray(HEADER);
             continue;
           }
@@ -398,7 +432,7 @@ class Mirror extends EventEmitter {
           const flags = buf[0];
           // A copy, so the packet does not keep the whole read buffer alive.
           const data = Buffer.from(buf.subarray(HEADER, HEADER + size));
-          this.emit('packet', { config: Boolean(flags & 0x40), key: Boolean(flags & 0x20), data });
+          packet({ config: Boolean(flags & 0x40), key: Boolean(flags & 0x20), data });
           buf = buf.subarray(HEADER + size);
         }
       }
@@ -489,6 +523,7 @@ class Mirror extends EventEmitter {
   // Closing the sockets stops the server on the device.
   #cleanup() {
     this.video?.destroy();
+    this.audio?.destroy();
     this.control?.destroy();
     if (this.proc && this.proc.exitCode === null) this.proc.kill();
     if (this.port) run(this.adb, ['-s', this.serial, 'forward', '--remove', `tcp:${this.port}`]).catch(() => {});

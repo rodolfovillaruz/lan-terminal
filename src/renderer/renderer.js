@@ -156,6 +156,57 @@ async function main() {
       decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: timestamp++, data: chunk }));
     };
 
+    // The device's sound: Opus packets, decoded and queued a little ahead of the
+    // audio clock so packets that arrive unevenly over adb still play without gaps.
+    // When the queue runs dry (the device went quiet) or runs too far ahead, it
+    // starts over AHEAD seconds from now.
+    const AHEAD = 0.06;
+    const MAX_AHEAD = 0.3;
+    let audioCtx = null;
+    let audioDecoder = null;
+    let playAt = 0;
+    let audioTime = 0;
+    const closeAudio = () => {
+      if (audioDecoder && audioDecoder.state !== 'closed') audioDecoder.close();
+      audioCtx?.close();
+      audioDecoder = null;
+      audioCtx = null;
+    };
+    const play = (frame) => {
+      if (!audioCtx) return frame.close();
+      const buffer = audioCtx.createBuffer(frame.numberOfChannels, frame.numberOfFrames, frame.sampleRate);
+      for (let c = 0; c < frame.numberOfChannels; c++) {
+        frame.copyTo(buffer.getChannelData(c), { planeIndex: c, format: 'f32-planar' });
+      }
+      frame.close();
+      const now = audioCtx.currentTime;
+      if (playAt < now + 0.01 || playAt > now + MAX_AHEAD) playAt = now + AHEAD;
+      const source = audioCtx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioCtx.destination);
+      source.start(playAt);
+      playAt += buffer.duration;
+    };
+    const onAudio = ({ config: isConfig, data }) => {
+      if (isConfig) {
+        // The OpusHead: the channel count is its byte 9.
+        closeAudio();
+        audioCtx = new AudioContext({ latencyHint: 'interactive', sampleRate: 48000 });
+        audioDecoder = new AudioDecoder({
+          output: play,
+          error: (err) => {
+            console.warn('scrcpy audio:', err.message);
+            closeAudio();
+          },
+        });
+        audioDecoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: data[9] || 2, description: data });
+        return;
+      }
+      if (audioDecoder?.state !== 'configured') return;
+      audioDecoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: audioTime, data }));
+      audioTime += 20000; // the timestamps only need to grow
+    };
+
     // Where a pointer event lands on the device, in video pixels; the picture is
     // letterboxed inside the canvas box (object-fit: contain).
     const devicePoint = (e) => {
@@ -311,6 +362,7 @@ async function main() {
       canvas.hidden = Boolean(next.status);
       if (next.status) {
         setCaptured(false);
+        closeAudio();
         video = null;
         closeDecoder();
       }
@@ -322,11 +374,13 @@ async function main() {
       update,
       session: (v) => { video = v; },
       packet: onPacket,
+      audio: onAudio,
       syncSize,
       focus: () => canvas.focus(),
       dispose: () => {
         setCaptured(false);
         closeDecoder();
+        closeAudio();
       },
     };
     panes.set(id, p);
@@ -401,6 +455,7 @@ async function main() {
   window.terminal.onData((id, data) => panes.get(id)?.term?.write(data));
   window.terminal.onScrcpySession((id, video) => panes.get(id)?.session?.(video));
   window.terminal.onScrcpyPacket((id, packet) => panes.get(id)?.packet?.(packet));
+  window.terminal.onScrcpyAudio((id, packet) => panes.get(id)?.audio?.(packet));
   window.terminal.onLayout((state) => {
     const seen = new Set();
     // A locked window with no panes shows just its background.

@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('terminal', {
   scrcpyHidMouse: (paneId, motion) => ipcRenderer.send('scrcpy:hid-mouse', paneId, motion),
   onScrcpySession: (cb) => ipcRenderer.on('scrcpy:session', (_e, paneId, video) => cb(paneId, video)),
   onScrcpyPacket: (cb) => ipcRenderer.on('scrcpy:packet', (_e, paneId, packet) => cb(paneId, packet)),
+  onScrcpyAudio: (cb) => ipcRenderer.on('scrcpy:audio', (_e, paneId, packet) => cb(paneId, packet)),
   onData: (cb) => ipcRenderer.on('pty:data', (_e, paneId, data) => cb(paneId, data)),
   onLayout: (cb) => ipcRenderer.on('layout', (_e, state) => cb(state)),
   onMoveMode: (cb) => ipcRenderer.on('moveMode', (_e, enabled) => cb(enabled)),

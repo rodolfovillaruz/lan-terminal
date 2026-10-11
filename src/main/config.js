@@ -23,6 +23,8 @@ const DEFAULTS = {
   scrcpyDisplays: [], // more new-display sizes for the pane menu, e.g. "1920x1080/240"
   scrcpyKeepApps: false, // closing a new display moves its apps to the main screen
   scrcpyImePolicy: null, // where a new display's keyboard shows: "local", "fallback", "hide"
+  scrcpyAudio: true, // play a device's sound in its pane (Android 11 or later)
+  scrcpyAudioDup: false, // keep the sound playing on the device too (Android 13 or later)
   fontSize: 16,
   width: null, // null = primary display width
   height: null, // null = primary display height
