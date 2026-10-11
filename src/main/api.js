@@ -53,6 +53,7 @@ function startApi(config, windows) {
     ['POST', /^\/windows\/([0-9a-f-]{36})\/focus$/, (id) => windows.focus(id)],
     ['POST', /^\/windows\/([0-9a-f-]{36})\/move-mode$/, (id, body) => windows.setMoveMode(id, body.enabled ?? true)],
     ['POST', /^\/windows\/([0-9a-f-]{36})\/always-on-top$/, (id, body) => windows.setAlwaysOnTop(id, body.enabled ?? true)],
+    ['POST', /^\/windows\/([0-9a-f-]{36})\/lock$/, (id, body) => windows.setLocked(id, body.enabled ?? true)],
   ];
 
   const server = http.createServer(async (req, res) => {

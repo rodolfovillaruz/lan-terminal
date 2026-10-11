@@ -10,7 +10,9 @@ function pane(id) {
   return { type: 'pane', id };
 }
 
+// An empty window has no tree (null), so it has no leaves.
 function leaves(node) {
+  if (!node) return [];
   return node.type === 'pane' ? [node.id] : node.children.flatMap(leaves);
 }
 

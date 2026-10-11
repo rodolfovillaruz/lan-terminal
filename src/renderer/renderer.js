@@ -96,9 +96,14 @@ async function main() {
   });
   window.terminal.onLayout((state) => {
     const seen = new Set();
-    const tree = build(state.layout, seen);
-    tree.style.flex = '1 1 0';
-    root.replaceChildren(tree);
+    // A locked window with no panes shows just its background.
+    if (state.layout) {
+      const tree = build(state.layout, seen);
+      tree.style.flex = '1 1 0';
+      root.replaceChildren(tree);
+    } else {
+      root.replaceChildren();
+    }
     for (const [id, p] of panes) {
       if (seen.has(id)) continue;
       p.term.dispose();

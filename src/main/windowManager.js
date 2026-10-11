@@ -20,7 +20,8 @@ class WindowManager extends EventEmitter {
   constructor(config) {
     super();
     this.config = config;
-    // id (UUID) -> { id, win, panes, layout, activePane, moveMode, alwaysOnTop, ready }
+    // id (UUID) -> { id, win, panes, layout, activePane, locked, moveMode, alwaysOnTop, ready }
+    // layout is null for a window with no panes, which only a locked window can be.
     // panes: paneId -> { id, term, pty, title, process, ready, pending, exited }
     // A pane's term is the window showing it; it changes when the pane moves.
     this.terminals = new Map();
@@ -29,6 +30,14 @@ class WindowManager extends EventEmitter {
     this.snapshots = new Map(); // request id -> resolve(serialized pane contents)
     this.quitting = false;
     app.on('before-quit', () => { this.quitting = true; });
+    // systemd stops the service with SIGTERM. Quit through the app so the locked
+    // windows, which refuse to close otherwise, let go.
+    for (const signal of ['SIGTERM', 'SIGINT']) {
+      process.on(signal, () => {
+        this.quitting = true;
+        app.quit();
+      });
+    }
 
     // Label each pane with its foreground process (bash, vim, claude, ...).
     setInterval(() => {
@@ -132,8 +141,10 @@ class WindowManager extends EventEmitter {
     plannerAction('planner:move', (fromId, paneId, toId, targetId, zone) => this.movePane(fromId, paneId, toId, targetId, zone));
     plannerAction('planner:resize', (id, splitPath, sizes) => this.resizeSplit(id, splitPath, sizes));
     plannerAction('planner:select', (id, paneId) => this.selectPane(id, paneId));
+    plannerAction('planner:add-pane', (id) => this.addPane(id));
     plannerAction('planner:new-window', () => this.create());
     plannerAction('planner:close-window', (id) => this.terminals.size > 1 && this.close(id));
+    plannerAction('planner:lock-window', (id, locked) => this.setLocked(id, locked));
     plannerAction('planner:focus-window', (id) => this.focus(id));
   }
 
@@ -177,7 +188,7 @@ class WindowManager extends EventEmitter {
       aspect: width / height,
       windows: [...this.terminals.values()]
         .filter((t) => !t.closed && !t.win.isDestroyed())
-        .map((t) => ({ id: t.id, focused: t.win.isFocused(), layout: t.layout, active: t.activePane, panes: this.#paneList(t) })),
+        .map((t) => ({ id: t.id, focused: t.win.isFocused(), locked: t.locked, layout: t.layout, active: t.activePane, panes: this.#paneList(t) })),
     };
   }
 
@@ -194,12 +205,14 @@ class WindowManager extends EventEmitter {
     this.#saveSoon();
   }
 
-  // Saves each window's pane shape for the next start. The shapes are taken now, not
+  // Saves each window's pane shape and lock for the next start. The shapes are taken now, not
   // when the timer fires, and nothing is saved while quitting, so the windows closing
   // on quit do not erase the saved set.
   #saveSoon() {
     if (this.quitting) return;
-    const saved = [...this.terminals.values()].filter((t) => !t.closed).map((t) => layout.shape(t.layout));
+    const saved = [...this.terminals.values()]
+      .filter((t) => !t.closed)
+      .map((t) => ({ panes: t.layout ? layout.shape(t.layout) : null, locked: t.locked }));
     clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       this.config.windows = saved;
@@ -237,13 +250,19 @@ class WindowManager extends EventEmitter {
     term.panes.delete(paneId);
     const heir = layout.heir(term.layout, paneId);
     const next = layout.removePane(term.layout, paneId);
-    if (!next) {
+    if (!next && !term.locked) {
       if (!term.win.isDestroyed()) term.win.close();
       return;
     }
-    term.layout = next;
-    if (term.activePane === paneId) term.activePane = heir;
+    this.#setLayout(term, next, term.activePane === paneId ? heir : term.activePane);
     this.#pushLayout(term);
+  }
+
+  // A locked window keeps its place on screen with no panes, so an OBS source pointed
+  // at it does not jump to another window when its last shell exits.
+  #setLayout(term, tree, active) {
+    term.layout = tree;
+    term.activePane = tree ? active : null;
   }
 
   // Stops sending a pane's output to its window and asks that window for the pane's
@@ -276,7 +295,9 @@ class WindowManager extends EventEmitter {
     pane.pending = '';
   }
 
-  create({ layout: saved } = {}) {
+  // saved is a pane shape; empty: true opens it with no panes (a locked window saved
+  // empty). Without either the window starts with one shell.
+  create({ layout: saved, empty = false, locked = false } = {}) {
     const id = crypto.randomUUID();
     const bounds = this.#fullBounds();
 
@@ -301,10 +322,12 @@ class WindowManager extends EventEmitter {
     });
     win.setMenu(null);
 
-    const term = { id, win, panes: new Map(), layout: null, activePane: null, moveMode: false, alwaysOnTop: false, ready: false };
+    const term = { id, win, panes: new Map(), layout: null, activePane: null, locked: Boolean(locked), moveMode: false, alwaysOnTop: false, ready: false };
     this.terminals.set(id, term);
-    term.layout = saved ? layout.hydrate(saved, () => this.#spawnPane(term)) : layout.pane(this.#spawnPane(term));
-    term.activePane = layout.leaves(term.layout)[0];
+    if (!(empty && term.locked)) {
+      term.layout = saved ? layout.hydrate(saved, () => this.#spawnPane(term)) : layout.pane(this.#spawnPane(term));
+      term.activePane = layout.leaves(term.layout)[0];
+    }
 
     // A reload (e.g. renderer crash recovery) needs a fresh handshake.
     win.webContents.on('did-start-loading', () => {
@@ -323,6 +346,10 @@ class WindowManager extends EventEmitter {
     });
     win.on('focus', () => this.#changed());
     win.on('moved', () => this.#changed());
+    // Nothing but quitting closes a locked window, not even the window manager.
+    win.on('close', (event) => {
+      if (term.locked && !this.quitting) event.preventDefault();
+    });
     win.on('closed', () => {
       term.closed = true;
       for (const pane of term.panes.values()) if (!pane.exited) pane.pty.kill();
@@ -341,10 +368,10 @@ class WindowManager extends EventEmitter {
     return id;
   }
 
-  // Startup: one window per saved pane shape.
+  // Startup: one window per saved entry, with its panes and lock.
   restore(saved) {
     if (!Array.isArray(saved) || saved.length === 0) return this.create();
-    const ids = saved.map((shape) => this.create({ layout: shape }));
+    const ids = saved.map((w) => this.create({ layout: w?.panes ?? undefined, empty: w?.panes === null, locked: w?.locked }));
     return ids[0];
   }
 
@@ -366,6 +393,7 @@ class WindowManager extends EventEmitter {
           y: b.y,
           width: b.width,
           height: b.height,
+          locked: t.locked,
           moveMode: t.moveMode,
           alwaysOnTop: t.alwaysOnTop,
           focused: t.win.isFocused(),
@@ -379,7 +407,33 @@ class WindowManager extends EventEmitter {
   close(id) {
     const term = this.get(id);
     if (!term) return false;
+    if (term.locked) throw new Error('window is locked');
     term.win.close();
+    return true;
+  }
+
+  // A locked window cannot be closed and stays open when its last pane exits.
+  setLocked(id, locked) {
+    const term = this.get(id);
+    if (!term) return false;
+    term.locked = Boolean(locked);
+    // Unlocking an empty window would leave a window nothing can fill or close itself.
+    if (!term.locked && !term.layout) {
+      term.win.close();
+      return true;
+    }
+    this.#changed();
+    this.#saveSoon();
+    return true;
+  }
+
+  // A new shell in an empty window.
+  addPane(id) {
+    const term = this.get(id);
+    if (!term || term.layout) return false;
+    const paneId = this.#spawnPane(term);
+    this.#setLayout(term, layout.pane(paneId), paneId);
+    this.#pushLayout(term);
     return true;
   }
 
@@ -453,27 +507,31 @@ class WindowManager extends EventEmitter {
     return true;
   }
 
-  // Killing the shell removes the pane once it exits (see #spawnPane).
+  // Killing the shell removes the pane once it exits (see #spawnPane). Only a locked
+  // window can lose its last pane this way.
   closePane(id, paneId) {
     const term = this.get(id);
     const pane = term?.panes.get(paneId);
-    if (!pane || term.panes.size === 1) return false;
+    if (!pane || (term.panes.size === 1 && !term.locked)) return false;
     pane.pty.kill();
     return true;
   }
 
   // Moves pane paneId of window fromId onto pane targetId of window toId. The center
   // zone trades the two panes' places; an edge zone puts the pane beside the target.
-  // Across windows the shell keeps running and its screen and scrollback come along.
-  // Moving a window's last pane out closes that window.
+  // With no targetId the pane fills the empty window toId. Across windows the shell
+  // keeps running and its screen and scrollback come along. Moving a window's last
+  // pane out closes that window unless it is locked.
   async movePane(fromId, paneId, toId, targetId, zone) {
     if (!(zone in ZONES)) throw new Error('unknown drop zone');
     const from = this.get(fromId);
     const to = this.get(toId);
     const pane = from?.panes.get(paneId);
-    const target = to?.panes.get(targetId);
-    if (!pane || !target || paneId === targetId) return false;
-    const place = ZONES[zone];
+    if (!pane || !to || (from === to && !targetId)) return false;
+    const target = targetId ? to.panes.get(targetId) : null;
+    if (targetId ? !target || paneId === targetId : to.layout) return false;
+    // Into an empty window: there is nothing to swap with, so it is a plain move.
+    const place = target ? ZONES[zone] : ZONES.right;
 
     if (from === to) {
       from.layout = place
@@ -490,7 +548,8 @@ class WindowManager extends EventEmitter {
     try {
       const [snapshot, targetSnapshot] = await Promise.all([this.#detach(pane), place ? null : this.#detach(target)]);
       // A window or pane can go away while the snapshots are on their way.
-      if (from.closed || to.closed || pane.exited || target.exited || !from.panes.has(paneId) || !to.panes.has(targetId)) {
+      const targetGone = target ? target.exited || !to.panes.has(targetId) : Boolean(to.layout);
+      if (from.closed || to.closed || pane.exited || targetGone || !from.panes.has(paneId)) {
         this.#reattach(pane);
         if (!place) this.#reattach(target);
         return false;
@@ -501,17 +560,16 @@ class WindowManager extends EventEmitter {
       pane.term = to;
 
       if (place) {
-        to.layout = layout.splitPane(to.layout, targetId, place.dir, paneId, place.before);
+        this.#setLayout(to, target ? layout.splitPane(to.layout, targetId, place.dir, paneId, place.before) : layout.pane(paneId), paneId);
         const heir = layout.heir(from.layout, paneId);
         const rest = layout.removePane(from.layout, paneId);
-        if (rest) {
-          from.layout = rest;
-          if (from.activePane === paneId) from.activePane = heir;
-        }
-        to.activePane = paneId;
         this.#pushLayout(to);
-        if (rest) this.#pushLayout(from);
-        else from.win.close();
+        if (rest || from.locked) {
+          this.#setLayout(from, rest, from.activePane === paneId ? heir : from.activePane);
+          this.#pushLayout(from);
+        } else {
+          from.win.close();
+        }
       } else {
         target.pending = targetSnapshot + target.pending;
         to.panes.delete(targetId);
@@ -533,7 +591,7 @@ class WindowManager extends EventEmitter {
 
   resizeSplit(id, splitPath, sizes) {
     const term = this.get(id);
-    if (!term) return false;
+    if (!term?.layout) return false;
     term.layout = layout.setSizes(term.layout, splitPath, sizes);
     this.#pushLayout(term);
     return true;

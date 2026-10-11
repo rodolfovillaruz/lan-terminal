@@ -94,6 +94,7 @@ main {
   overflow: hidden;
 }
 .window.focused { border-color: var(--accent); }
+.window.locked .window-head { background: #2a2617; }
 .window-head {
   display: flex;
   align-items: center;
@@ -181,3 +182,44 @@ main {
 .pane button.close:hover, .window-head button.close:hover { color: var(--danger); }
 .pane button:disabled, .window-head button:disabled { opacity: 0.3; pointer-events: none; }
 .pane button:focus-visible, .window-head button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Lock toggle: reads as a pressed state, and amber so it stands apart from the accent. */
+.window-head button.lock {
+  width: auto;
+  padding: 0 8px;
+  font-size: 12px;
+}
+.window-head button.lock[aria-pressed='true'] {
+  color: #f5c451;
+  border-color: #6b5a26;
+  background: #3a3220;
+}
+
+/* A locked window with no panes. */
+.empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 8px;
+}
+.empty p { margin: 0; }
+.empty.drop { border-color: var(--accent); background: rgba(76, 155, 255, 0.15); }
+.empty button {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #262930;
+  color: var(--text);
+  font: 13px system-ui, sans-serif;
+  cursor: pointer;
+}
+.empty button:hover { border-color: var(--accent); }
+.empty button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

@@ -18,7 +18,7 @@ const DEFAULTS = {
   background: '#000000',
   foreground: '#e6e6e6',
   presenterMode: true, // move mode shows only the move cursor, no overlay or hint
-  windows: null, // each window's pane split shape, restored on startup
+  windows: null, // each window's pane split shape and lock, restored on startup
 };
 
 function load() {
@@ -39,6 +39,11 @@ function load() {
   if (!config.windows && config.layout) config.windows = [config.layout];
   delete config.layout;
   delete config.tiling;
+  // Entries were bare pane shapes before windows could be locked.
+  if (Array.isArray(config.windows)) {
+    config.windows = config.windows.map((w) =>
+      typeof w === 'string' || (w && 'dir' in w) ? { panes: w, locked: false } : w);
+  }
   if (!config.token) config.token = crypto.randomBytes(24).toString('base64url');
 
   // Write back so new defaults and the generated token are visible to the user.
