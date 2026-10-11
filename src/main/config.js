@@ -5,6 +5,9 @@ const crypto = require('crypto');
 
 const CONFIG_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'lan-terminal');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
+// Each Android device's apps, as last listed, so a pane's app menu opens at once
+// after a restart: { <adb serial>: { apps: [{ name, package, system }], at } }.
+const DEVICE_APPS_PATH = path.join(CONFIG_DIR, 'device-apps.json');
 
 const DEFAULTS = {
   host: '0.0.0.0',
@@ -69,4 +72,22 @@ function save(config) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
 }
 
-module.exports = { load, save, CONFIG_PATH };
+function loadDeviceApps() {
+  try {
+    const stored = JSON.parse(fs.readFileSync(DEVICE_APPS_PATH, 'utf8'));
+    return stored && typeof stored === 'object' ? stored : {};
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`Could not read ${DEVICE_APPS_PATH}:`, err.message);
+    return {};
+  }
+}
+
+// Written to a temporary file first, so a crash mid-write leaves the old lists.
+function saveDeviceApps(lists) {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  const tmp = `${DEVICE_APPS_PATH}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(lists) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, DEVICE_APPS_PATH);
+}
+
+module.exports = { load, save, loadDeviceApps, saveDeviceApps, CONFIG_PATH };

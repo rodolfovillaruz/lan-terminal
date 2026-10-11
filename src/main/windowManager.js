@@ -4,7 +4,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const pty = require('node-pty');
-const { save: saveConfig } = require('./config');
+const { save: saveConfig, loadDeviceApps, saveDeviceApps } = require('./config');
 const layout = require('./layout');
 const mux = require('./mux');
 const ls = require('./linuxserver');
@@ -72,8 +72,13 @@ class WindowManager extends EventEmitter {
     this.adb = scrcpy.findAdb(config.adb);
     this.devices = []; // Android devices as last listed: [{ serial, model }]
     this.scrcpyTools = null; // the installed scrcpy's { version, server }, once found
-    // serial -> { apps, at, loading }: each device's apps for the planner's app menus.
-    this.deviceApps = new Map();
+    // serial -> { apps, at, loading }: each device's apps for the planner's app menus,
+    // kept on disk between runs.
+    this.deviceApps = new Map(
+      Object.entries(loadDeviceApps())
+        .filter(([serial, l]) => scrcpy.validSerial(serial) && Array.isArray(l?.apps))
+        .map(([serial, l]) => [serial, { apps: l.apps.filter((a) => scrcpy.validPackage(a?.package)), at: Number(l.at) || 0 }]),
+    );
     this.quitting = false;
     app.on('before-quit', () => { this.quitting = true; });
     // systemd stops the service with SIGTERM. Quit through the app so the locked
@@ -311,23 +316,40 @@ class WindowManager extends EventEmitter {
     return [...new Set(['', 'fit', ...extra.filter(scrcpy.validDisplay)])];
   }
 
-  // A device's apps, listed by the scrcpy server and kept for a minute, since listing
-  // takes the device several seconds. A listing already under way is shared.
+  // A device's apps. Listing takes the device several seconds, so the last list (kept
+  // on disk between runs) comes back at once, and one older than a minute is listed
+  // again in the background for the next time. Only a device never listed waits.
   async #deviceApps(serial) {
     if (!scrcpy.validSerial(serial) || !this.adb) return [];
     const cached = this.deviceApps.get(serial);
+    if (cached?.apps) {
+      if (!cached.loading && Date.now() - cached.at > 60000) this.#listApps(serial).catch(() => {});
+      return cached.apps;
+    }
+    return cached?.loading ?? this.#listApps(serial);
+  }
+
+  // Lists a device's apps and saves the list. A listing already under way is shared.
+  async #listApps(serial) {
+    const cached = this.deviceApps.get(serial);
     if (cached?.loading) return cached.loading;
-    if (cached?.apps && Date.now() - cached.at < 60000) return cached.apps;
-    this.scrcpyTools ??= await scrcpy.findScrcpy(this.config.scrcpy);
-    const loading = scrcpy.apps({ adb: this.adb, ...this.scrcpyTools }, serial);
+    const loading = (async () => {
+      this.scrcpyTools ??= await scrcpy.findScrcpy(this.config.scrcpy);
+      return scrcpy.apps({ adb: this.adb, ...this.scrcpyTools }, serial);
+    })();
     this.deviceApps.set(serial, { ...cached, loading });
     try {
       const apps = await loading;
       this.deviceApps.set(serial, { apps, at: Date.now() });
+      const lists = Object.fromEntries([...this.deviceApps].filter(([, l]) => l.apps).map(([s, l]) => [s, { apps: l.apps, at: l.at }]));
+      try {
+        saveDeviceApps(lists);
+      } catch (err) {
+        console.warn('Could not save the device app lists:', err.message);
+      }
       return apps;
     } catch (err) {
       this.deviceApps.set(serial, { ...cached, loading: null });
-      if (cached?.apps) return cached.apps;
       throw err;
     }
   }
@@ -501,8 +523,9 @@ class WindowManager extends EventEmitter {
         }
         // A new display starts empty: bring back the app the pane last had open.
         if (!pane.video && display !== null && pane.startApp) mirror.send({ type: 'startApp', package: pane.startApp });
-        // List the device's apps ahead of the planner's app menu needing them.
-        if (!this.deviceApps.has(device)) this.#deviceApps(device).catch(() => {});
+        // List the device's apps ahead of the planner's app menu needing them (or
+        // refresh a list from an earlier run).
+        if (!pane.video) this.#deviceApps(device).catch(() => {});
         pane.video = video;
         send('scrcpy:session', video);
         setStatus(null);
