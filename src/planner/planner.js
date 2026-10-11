@@ -5,10 +5,10 @@
 const stage = document.getElementById('stage');
 let state = null;
 let drag = null; // gutter drag in progress
-let dragging = null; // pane being dragged: { windowId, paneId }
+let pressed = false; // pointer down on a pane, maybe about to drag it
+let dragging = null; // pane being dragged: { windowId, paneId, el, ghost, over }
 let pending = null; // state that arrived during a drag, drawn when it ends
 
-const PANE_TYPE = 'text/x-pane';
 const EDGE = 0.25; // share of a pane's width or height that counts as its edge
 
 document.getElementById('new-window').addEventListener('click', () => window.planner.newWindow());
@@ -109,6 +109,80 @@ function build(node, path, leaf, onResize) {
   return box;
 }
 
+// Pane dragging uses pointer events, not HTML drag and drop: Chromium's X11 drag
+// session can wedge the whole app when the drop makes the main process busy.
+// A press that moves less than DRAG_START pixels is a click, which selects the pane.
+const DRAG_START = 5;
+
+function startDrag(el, windowId, paneId, label) {
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.target.closest('button')) return;
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    pressed = true;
+    const press = { x: e.clientX, y: e.clientY };
+
+    const move = (ev) => {
+      if (!dragging) {
+        if (Math.hypot(ev.clientX - press.x, ev.clientY - press.y) < DRAG_START) return;
+        const ghost = document.createElement('div');
+        ghost.className = 'ghost';
+        ghost.textContent = label;
+        document.body.appendChild(ghost);
+        dragging = { windowId, paneId, el, ghost, over: null };
+        el.classList.add('dragging');
+      }
+      dragging.ghost.style.transform = `translate(${ev.clientX + 12}px, ${ev.clientY + 12}px)`;
+      const target = dropTarget(ev);
+      if (dragging.over && dragging.over !== target?.el) delete dragging.over.dataset.drop;
+      dragging.over = target?.el || null;
+      if (target) target.el.dataset.drop = target.zone;
+    };
+
+    const finish = (ev, drop) => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('keydown', escape, true);
+      pressed = false;
+      if (!dragging) {
+        if (drop) window.planner.select(windowId, paneId);
+        flush();
+        return;
+      }
+      const target = drop ? dropTarget(ev) : null;
+      if (dragging.over) delete dragging.over.dataset.drop;
+      dragging.ghost.remove();
+      el.classList.remove('dragging');
+      dragging = null;
+      if (target) window.planner.move(windowId, paneId, target.windowId, target.paneId, target.zone);
+      flush();
+    };
+    const up = (ev) => finish(ev, true);
+    const cancel = (ev) => finish(ev, false);
+    const escape = (ev) => {
+      if (ev.key === 'Escape') finish(ev, false);
+    };
+
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', cancel);
+    window.addEventListener('keydown', escape, true);
+  });
+}
+
+// The pane or empty window under the pointer, and where on it the pane would land.
+function dropTarget(e) {
+  const hit = document.elementFromPoint(e.clientX, e.clientY)?.closest('.pane, .empty');
+  if (!hit || !dragging) return null;
+  if (hit.classList.contains('empty')) {
+    if (hit.dataset.windowId === dragging.windowId) return null;
+    return { el: hit, windowId: hit.dataset.windowId, paneId: null, zone: 'center' };
+  }
+  if (hit.dataset.paneId === dragging.paneId) return null;
+  return { el: hit, windowId: hit.dataset.windowId, paneId: hit.dataset.paneId, zone: dropZone(hit, e) };
+}
+
 // Which part of the pane the pointer is over: an edge, or the middle.
 function dropZone(el, e) {
   const r = el.getBoundingClientRect();
@@ -144,34 +218,9 @@ function paneBox(win, id) {
   button(tools, '✕', 'Close pane', () => window.planner.close(win.id, id), 'close').disabled = win.panes.length === 1 && !win.locked;
 
   el.append(zone, tools, num, proc);
-  el.addEventListener('click', () => window.planner.select(win.id, id));
-
-  el.draggable = true;
-  el.addEventListener('dragstart', (e) => {
-    e.dataTransfer.setData(PANE_TYPE, id);
-    e.dataTransfer.effectAllowed = 'move';
-    dragging = { windowId: win.id, paneId: id };
-    el.classList.add('dragging');
-  });
-  el.addEventListener('dragend', () => {
-    el.classList.remove('dragging');
-    dragging = null;
-    flush();
-  });
-  el.addEventListener('dragover', (e) => {
-    if (!dragging || dragging.paneId === id) return;
-    e.preventDefault();
-    el.dataset.drop = dropZone(el, e);
-  });
-  el.addEventListener('dragleave', (e) => {
-    if (!el.contains(e.relatedTarget)) delete el.dataset.drop;
-  });
-  el.addEventListener('drop', (e) => {
-    delete el.dataset.drop;
-    if (!dragging || dragging.paneId === id) return;
-    e.preventDefault();
-    window.planner.move(dragging.windowId, dragging.paneId, win.id, id, dropZone(el, e));
-  });
+  el.dataset.windowId = win.id;
+  el.dataset.paneId = id;
+  startDrag(el, win.id, id, proc.textContent);
   return el;
 }
 
@@ -185,20 +234,7 @@ function emptyBox(win) {
   add.textContent = 'New shell';
   add.addEventListener('click', () => window.planner.addPane(win.id));
   el.append(text, add);
-  el.addEventListener('dragover', (e) => {
-    if (!dragging || dragging.windowId === win.id) return;
-    e.preventDefault();
-    el.classList.add('drop');
-  });
-  el.addEventListener('dragleave', (e) => {
-    if (!el.contains(e.relatedTarget)) el.classList.remove('drop');
-  });
-  el.addEventListener('drop', (e) => {
-    el.classList.remove('drop');
-    if (!dragging || dragging.windowId === win.id) return;
-    e.preventDefault();
-    window.planner.move(dragging.windowId, dragging.paneId, win.id, null, 'center');
-  });
+  el.dataset.windowId = win.id;
   return el;
 }
 
@@ -255,7 +291,7 @@ function flush() {
 // arrives during a drag waits for it to end.
 function render(next) {
   if (!next) return;
-  if (drag || dragging) {
+  if (drag || dragging || pressed) {
     pending = next;
     return;
   }

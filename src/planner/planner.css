@@ -211,7 +211,27 @@ main {
   padding: 8px;
 }
 .empty p { margin: 0; }
-.empty.drop { border-color: var(--accent); background: rgba(76, 155, 255, 0.15); }
+.empty[data-drop] { border-color: var(--accent); background: rgba(76, 155, 255, 0.15); }
+
+/* Follows the pointer while a pane is dragged. */
+.ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 10;
+  max-width: 240px;
+  padding: 4px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: #1d2a3d;
+  color: var(--text);
+  font: 12px 'JetBrainsMono NL NFM', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+body:has(.ghost) { cursor: grabbing; }
 .empty button {
   padding: 5px 12px;
   border: 1px solid var(--border);
