@@ -9,8 +9,6 @@ contextBridge.exposeInMainWorld('terminal', {
   focusPane: (paneId) => ipcRenderer.send('pane:focus', paneId),
   onData: (cb) => ipcRenderer.on('pty:data', (_e, paneId, data) => cb(paneId, data)),
   onLayout: (cb) => ipcRenderer.on('layout', (_e, state) => cb(state)),
-  onSerialize: (cb) => ipcRenderer.on('pane:serialize', (_e, requestId, paneId) => cb(requestId, paneId)),
-  serialized: (requestId, data) => ipcRenderer.send('pane:serialized', requestId, data),
   onMoveMode: (cb) => ipcRenderer.on('moveMode', (_e, enabled) => cb(enabled)),
   onPresenterMode: (cb) => ipcRenderer.on('presenterMode', (_e, enabled) => cb(enabled)),
   exitMoveMode: () => ipcRenderer.send('moveMode:exit'),

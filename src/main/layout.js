@@ -114,7 +114,7 @@ function heir(tree, paneId) {
   return null;
 }
 
-// Puts newId where oldId was, e.g. when panes trade places across two windows.
+// Puts newId where oldId was, e.g. when a pane switches to another shell or session.
 function replacePane(tree, oldId, newId) {
   return map(tree, (node) => (node.type === 'pane' && node.id === oldId ? pane(newId) : node));
 }

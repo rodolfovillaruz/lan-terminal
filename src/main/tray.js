@@ -14,12 +14,16 @@ function createTray(config, windows) {
   const tray = new Tray(icon);
   tray.setToolTip('LAN Terminal');
 
+  const label = (w) => {
+    if (w.panes.length === 0) return 'Empty window (locked)';
+    const name = w.session ? `ptmux ${w.session}` : w.process;
+    return w.title === name || w.title === w.process ? name : `${name} — ${w.title}`;
+  };
+
   const build = (list = windows.list()) => {
     const windowItems = list.length
       ? list.map((w) => ({
-          label: w.panes.length === 0
-            ? 'Empty window (locked)'
-            : w.title === w.process ? w.process : `${w.process} — ${w.title}`,
+          label: label(w),
           type: 'radio',
           checked: w.focused,
           click: () => windows.focus(w.id),

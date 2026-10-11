@@ -7,7 +7,8 @@ let state = null;
 let drag = null; // gutter drag in progress
 let pressed = false; // pointer down on a pane, maybe about to drag it
 let dragging = null; // pane being dragged: { windowId, paneId, el, ghost, over }
-let pending = null; // state that arrived during a drag, drawn when it ends
+let choosing = false; // a pane's source menu has focus; a redraw would close it
+let pending = null; // state that arrived during a drag or a menu choice, drawn after it
 
 const EDGE = 0.25; // share of a pane's width or height that counts as its edge
 
@@ -116,7 +117,7 @@ const DRAG_START = 5;
 
 function startDrag(el, windowId, paneId, label) {
   el.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0 || e.target.closest('button')) return;
+    if (e.button !== 0 || e.target.closest('button, select')) return;
     e.preventDefault();
     el.setPointerCapture(e.pointerId);
     pressed = true;
@@ -155,7 +156,7 @@ function startDrag(el, windowId, paneId, label) {
       dragging.ghost.remove();
       el.classList.remove('dragging');
       dragging = null;
-      if (target) window.planner.move(windowId, paneId, target.windowId, target.paneId, target.zone);
+      if (target) window.planner.move(windowId, paneId, target.paneId, target.zone);
       flush();
     };
     const up = (ev) => finish(ev, true);
@@ -171,16 +172,12 @@ function startDrag(el, windowId, paneId, label) {
   });
 }
 
-// The pane or empty window under the pointer, and where on it the pane would land.
+// The pane under the pointer, and where on it the dragged pane would land. Only panes
+// of the dragged pane's own window take a drop.
 function dropTarget(e) {
-  const hit = document.elementFromPoint(e.clientX, e.clientY)?.closest('.pane, .empty');
-  if (!hit || !dragging) return null;
-  if (hit.classList.contains('empty')) {
-    if (hit.dataset.windowId === dragging.windowId) return null;
-    return { el: hit, windowId: hit.dataset.windowId, paneId: null, zone: 'center' };
-  }
-  if (hit.dataset.paneId === dragging.paneId) return null;
-  return { el: hit, windowId: hit.dataset.windowId, paneId: hit.dataset.paneId, zone: dropZone(hit, e) };
+  const hit = document.elementFromPoint(e.clientX, e.clientY)?.closest('.pane');
+  if (!hit || !dragging || hit.dataset.windowId !== dragging.windowId || hit.dataset.paneId === dragging.paneId) return null;
+  return { el: hit, paneId: hit.dataset.paneId, zone: dropZone(hit, e) };
 }
 
 // Which part of the pane the pointer is over: an edge, or the middle.
@@ -191,6 +188,51 @@ function dropZone(el, e) {
   const edges = [['left', x], ['right', 1 - x], ['top', y], ['bottom', 1 - y]].filter(([, d]) => d < EDGE);
   if (edges.length === 0) return 'center';
   return edges.sort((a, b) => a[1] - b[1])[0][0];
+}
+
+// What a pane shows, as one line: "ptmux 2 — vim notes.md", "bash", "vim — notes.md".
+function paneLabel(info) {
+  const name = info.session ? `ptmux ${info.session}` : info.process;
+  return info.title && info.title !== name && info.title !== info.process ? `${name} — ${info.title}` : name;
+}
+
+// The menu that picks what a pane shows: a shell, a running ptmux session, or a new
+// session. current is the pane's choice, or null for a placeholder (an empty window).
+// While the menu has focus, redraws wait, or the open menu would vanish.
+function sourceMenu(current, onChoose) {
+  const select = document.createElement('select');
+  select.className = 'source';
+  select.title = 'What this pane shows. A ptmux session keeps running when the pane closes or switches.';
+  const option = (parent, value, label) => {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    parent.appendChild(o);
+    return o;
+  };
+  if (current === null) option(select, '', 'Open…').disabled = true;
+  option(select, 'shell', 'Shell');
+  if (state.ptmux) {
+    const group = document.createElement('optgroup');
+    group.label = 'ptmux sessions';
+    const names = new Set(state.sessions);
+    // The pane's own session, even if `ptmux ls` has not seen it yet.
+    if (current?.startsWith('ptmux:')) names.add(current.slice(6));
+    for (const name of names) option(group, `ptmux:${name}`, name);
+    option(group, 'ptmux:new', 'New session');
+    select.appendChild(group);
+  }
+  select.value = current ?? '';
+  select.addEventListener('focus', () => { choosing = true; });
+  select.addEventListener('blur', () => {
+    choosing = false;
+    flush();
+  });
+  select.addEventListener('change', () => {
+    onChoose(select.value);
+    select.blur();
+  });
+  return select;
 }
 
 function paneBox(win, id) {
@@ -205,35 +247,34 @@ function paneBox(win, id) {
   num.textContent = order + 1;
   const proc = document.createElement('div');
   proc.className = 'proc';
-  proc.textContent = info.title && info.title !== info.process ? `${info.process} — ${info.title}` : info.process;
+  proc.textContent = paneLabel(info);
   el.title = proc.textContent;
   const zone = document.createElement('div');
   zone.className = 'zone';
+  const source = sourceMenu(info.session ? `ptmux:${info.session}` : 'shell', (value) => window.planner.setSource(win.id, id, value));
 
   const tools = document.createElement('div');
   tools.className = 'tools';
   button(tools, '◫', 'Split pane right', () => window.planner.split(win.id, id, 'row'));
   button(tools, '⊟', 'Split pane down', () => window.planner.split(win.id, id, 'col'));
   // Only a locked window may lose its last pane; any other window would close.
-  button(tools, '✕', 'Close pane', () => window.planner.close(win.id, id), 'close').disabled = win.panes.length === 1 && !win.locked;
+  button(tools, '✕', info.session ? 'Close pane (the session keeps running)' : 'Close pane', () => window.planner.close(win.id, id), 'close').disabled =
+    win.panes.length === 1 && !win.locked;
 
-  el.append(zone, tools, num, proc);
+  el.append(zone, tools, num, proc, source);
   el.dataset.windowId = win.id;
   el.dataset.paneId = id;
   startDrag(el, win.id, id, proc.textContent);
   return el;
 }
 
-// A locked window with no panes: start a shell in it, or drop a pane from another window.
+// A locked window with no panes: start a shell or a ptmux session in it.
 function emptyBox(win) {
   const el = document.createElement('div');
   el.className = 'empty';
   const text = document.createElement('p');
   text.textContent = 'No panes. The window stays open and blank.';
-  const add = document.createElement('button');
-  add.textContent = 'New shell';
-  add.addEventListener('click', () => window.planner.addPane(win.id));
-  el.append(text, add);
+  el.append(text, sourceMenu(null, (value) => window.planner.addPane(win.id, value)));
   el.dataset.windowId = win.id;
   return el;
 }
@@ -249,7 +290,7 @@ function windowCard(win, number) {
   const name = document.createElement('span');
   name.className = 'name';
   const active = win.panes.find((p) => p.id === win.active);
-  name.textContent = `Window ${number}${active ? ` · ${active.process}` : ''}`;
+  name.textContent = `Window ${number}${active ? ` · ${active.session ? `ptmux ${active.session}` : active.process}` : ''}`;
   const tools = document.createElement('span');
   tools.className = 'tools';
   const lock = button(
@@ -288,10 +329,10 @@ function flush() {
 }
 
 // Redrawing mid-drag would remove the element being dragged, so a state that
-// arrives during a drag waits for it to end.
+// arrives during a drag, or while a source menu is open, waits for it to end.
 function render(next) {
   if (!next) return;
-  if (drag || dragging || pressed) {
+  if (drag || dragging || pressed || choosing) {
     pending = next;
     return;
   }

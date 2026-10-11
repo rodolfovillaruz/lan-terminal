@@ -53,6 +53,7 @@ On first run the app writes a config file to `~/.config/lan-terminal/config.json
 | `token` | random | Required on every API request |
 | `shell` | `null` | `null` means `$SHELL`, otherwise the shell you set |
 | `shellArgs` | `["-l"]` | Shell arguments (default starts a login shell) |
+| `ptmux` | `null` | Path to [ptmux](../pseudo-terminal); `null` looks on `$PATH`, then in `~/.cargo/bin` |
 | `fontSize` | `16` | Font size |
 | `width` / `height` | `null` | Window size; `null` means the primary display's size |
 | `background` / `foreground` | `#000000` / `#e6e6e6` | Terminal colours |
@@ -68,7 +69,7 @@ Send `Authorization: Bearer <token>` on every request. You can also put `?token=
 
 | Method & path | Body | Action |
 |---|---|---|
-| `GET /windows` | | List windows: `id, title, process, x, y, width, height, moveMode, alwaysOnTop, focused, minimized, pid` |
+| `GET /windows` | | List windows: `id, title, process, session, x, y, width, height, moveMode, alwaysOnTop, focused, minimized, pid, panes`; `session` is the active pane's ptmux session, or `null` for a shell |
 | `POST /windows` | | Open a new terminal window; returns `{id}` (a UUID) |
 | `POST /windows/:id/move-mode` | `{"enabled": true\|false}` | Turn move mode on or off |
 | `POST /windows/:id/always-on-top` | `{"enabled": true\|false}` | Keep the window above everything (covering the panel) and hide it from the taskbar and Alt+Tab |
@@ -87,6 +88,12 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"x":0,"y":-200}' http://192.
 curl -X POST -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/windows/$ID/reset-position
 curl -X DELETE -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/windows/$ID
 ```
+
+## Panes and ptmux sessions
+
+**Plan layout…** in the tray opens the planner, which shows every window and its panes. Split, close and resize panes there, or drag a pane onto another pane of the **same** window to swap them or put it on that side. Panes do not move between windows.
+
+Each pane has a menu that picks what it shows: a **Shell**, a running [ptmux](../pseudo-terminal) session, or **New session** (named with the next free number). A session pane runs `ptmux attach`, so closing the pane, switching it to something else, or pressing `C-b d` only detaches: the session keeps running, and any pane in any window can pick it up again. Sessions are saved with the layout. On the next start their panes reattach, and a session that no longer exists (after a reboot, say) starts again under the same name. The menus only list ptmux sessions when the app can find the `ptmux` binary.
 
 **Move mode** puts a blue overlay over the window. Drag anywhere on it to move the window, including above the top of the screen. While the overlay is up, typing does not reach the shell. Press Esc or call `move-mode` with `{"enabled": false}` to turn it off.
 

@@ -68,4 +68,13 @@ b = L.splitPane(b, 'c', 'col', 'd', true);
 assert.deepStrictEqual(L.leaves(b), ['b', 'd', 'c', 'a']);
 assert.deepStrictEqual(L.leaves(L.replacePane(b, 'd', 'x')), ['b', 'x', 'c', 'a']);
 
+// Leaves can save what they show (a ptmux session) and come back with it.
+const sessions = { b: '3', c: 'work' };
+const saved = JSON.parse(JSON.stringify(L.shape(b, (id) => (sessions[id] ? { ptmux: sessions[id] } : 'pane'))));
+assert.deepStrictEqual(saved.children[0], { ptmux: '3' });
+const made = [];
+const back = L.hydrate(saved, (leaf) => (made.push(leaf?.ptmux ?? null), `s${made.length}`), (s) => s === 'pane' || typeof s?.ptmux === 'string');
+assert.deepStrictEqual(made, ['3', null, 'work', null]);
+assert.deepStrictEqual(L.leaves(back), ['s1', 's2', 's3', 's4']);
+
 console.log('layout ok');

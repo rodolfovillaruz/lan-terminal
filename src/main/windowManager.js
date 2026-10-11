@@ -1,5 +1,7 @@
 const { app, BrowserWindow, ipcMain, screen } = require('electron');
 const { EventEmitter } = require('events');
+const { execFile } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
@@ -16,18 +18,42 @@ const ZONES = {
   bottom: { dir: 'col', before: false },
 };
 
+// ptmux (the pseudo-terminal project) from config, $PATH or cargo's install dir. The
+// systemd user service runs without ~/.cargo/bin on its PATH, hence the last one.
+function findPtmux(configured) {
+  if (configured) return configured;
+  const dirs = [...(process.env.PATH || '').split(path.delimiter), path.join(os.homedir(), '.cargo', 'bin')];
+  for (const dir of dirs.filter(Boolean)) {
+    const file = path.join(dir, 'ptmux');
+    try {
+      fs.accessSync(file, fs.constants.X_OK);
+      return file;
+    } catch {
+      // not here
+    }
+  }
+  return null;
+}
+
+// ptmux session names are socket file names, so they cannot contain '/' or '.'.
+const validSession = (name) => typeof name === 'string' && name !== '' && !/[/.]/.test(name);
+
+// A saved pane shape leaf: 'pane' for a shell, { ptmux: name } for a session.
+const isLeaf = (s) => s === 'pane' || validSession(s?.ptmux);
+
 class WindowManager extends EventEmitter {
   constructor(config) {
     super();
     this.config = config;
     // id (UUID) -> { id, win, panes, layout, activePane, locked, moveMode, alwaysOnTop, ready }
     // layout is null for a window with no panes, which only a locked window can be.
-    // panes: paneId -> { id, term, pty, title, process, ready, pending, exited }
-    // A pane's term is the window showing it; it changes when the pane moves.
+    // panes: paneId -> { id, pty, session, title, process, ready, pending, exited }
+    // session is the ptmux session the pane is attached to, or null for a plain shell.
     this.terminals = new Map();
     this.saveTimer = null;
     this.planner = null; // the layout planner window, while open
-    this.snapshots = new Map(); // request id -> resolve(serialized pane contents)
+    this.ptmux = findPtmux(config.ptmux);
+    this.sessions = []; // live ptmux sessions as of the last `ptmux ls`
     this.quitting = false;
     app.on('before-quit', () => { this.quitting = true; });
     // systemd stops the service with SIGTERM. Quit through the app so the locked
@@ -57,6 +83,10 @@ class WindowManager extends EventEmitter {
       }
       if (changed) this.#changed();
     }, 1000);
+    // Sessions started or ended outside the app show up in the planner's pane menus.
+    setInterval(() => {
+      if (this.#plannerOpen()) this.refreshSessions();
+    }, 2000);
 
     // Renderer -> PTY. The sender identifies the window; the pane id picks the shell in it.
     ipcMain.on('pty:input', (event, paneId, data) => this.#pane(event, paneId)?.pty.write(data));
@@ -79,12 +109,6 @@ class WindowManager extends EventEmitter {
       pane.ready = true;
       if (pane.pending) event.sender.send('pty:data', pane.id, pane.pending);
       pane.pending = '';
-    });
-    // A pane's screen and scrollback, serialized so it can move to another window.
-    ipcMain.on('pane:serialized', (_event, requestId, data) => {
-      const resolve = this.snapshots.get(requestId);
-      this.snapshots.delete(requestId);
-      resolve?.(typeof data === 'string' ? data : '');
     });
     ipcMain.on('pane:focus', (event, paneId) => {
       const term = this.#fromSender(event);
@@ -138,10 +162,11 @@ class WindowManager extends EventEmitter {
       });
     plannerAction('planner:split', (id, paneId, dir) => this.splitPane(id, paneId, dir));
     plannerAction('planner:close', (id, paneId) => this.closePane(id, paneId));
-    plannerAction('planner:move', (fromId, paneId, toId, targetId, zone) => this.movePane(fromId, paneId, toId, targetId, zone));
+    plannerAction('planner:move', (id, paneId, targetId, zone) => this.movePane(id, paneId, targetId, zone));
     plannerAction('planner:resize', (id, splitPath, sizes) => this.resizeSplit(id, splitPath, sizes));
     plannerAction('planner:select', (id, paneId) => this.selectPane(id, paneId));
-    plannerAction('planner:add-pane', (id) => this.addPane(id));
+    plannerAction('planner:source', (id, paneId, source) => this.setPaneSource(id, paneId, source));
+    plannerAction('planner:add-pane', (id, source) => this.addPane(id, source));
     plannerAction('planner:new-window', () => this.create());
     plannerAction('planner:close-window', (id) => this.terminals.size > 1 && this.close(id));
     plannerAction('planner:lock-window', (id, locked) => this.setLocked(id, locked));
@@ -178,7 +203,7 @@ class WindowManager extends EventEmitter {
   #paneList(term) {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
-      return { id, title: p.title, process: p.process, pid: p.pty.pid };
+      return { id, title: p.title, process: p.process, session: p.session, pid: p.pty.pid };
     });
   }
 
@@ -186,6 +211,8 @@ class WindowManager extends EventEmitter {
     const { width, height } = this.#fullBounds();
     return {
       aspect: width / height,
+      ptmux: Boolean(this.ptmux),
+      sessions: this.sessions,
       windows: [...this.terminals.values()]
         .filter((t) => !t.closed && !t.win.isDestroyed())
         .map((t) => ({ id: t.id, focused: t.win.isFocused(), locked: t.locked, layout: t.layout, active: t.activePane, panes: this.#paneList(t) })),
@@ -210,9 +237,13 @@ class WindowManager extends EventEmitter {
   // on quit do not erase the saved set.
   #saveSoon() {
     if (this.quitting) return;
+    const leafShape = (t) => (id) => {
+      const session = t.panes.get(id)?.session;
+      return session ? { ptmux: session } : 'pane';
+    };
     const saved = [...this.terminals.values()]
       .filter((t) => !t.closed)
-      .map((t) => ({ panes: t.layout ? layout.shape(t.layout) : null, locked: t.locked }));
+      .map((t) => ({ panes: t.layout ? layout.shape(t.layout, leafShape(t)) : null, locked: t.locked }));
     clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       this.config.windows = saved;
@@ -220,29 +251,68 @@ class WindowManager extends EventEmitter {
     }, 500);
   }
 
-  #spawnPane(term) {
+  // With a session name the pane runs a ptmux client attached to that session,
+  // starting the session if it is not running. The session outlives the pane: closing
+  // the pane only detaches. Without ptmux the pane falls back to a shell.
+  #spawnPane(term, session = null) {
+    if (!this.ptmux || !validSession(session)) session = null;
     const id = crypto.randomUUID();
     const shell = this.config.shell || process.env.SHELL || os.userInfo().shell || '/bin/bash';
-    const proc = pty.spawn(shell, this.config.shellArgs || [], {
-      name: 'xterm-256color',
-      cols: 80,
-      rows: 24,
-      cwd: os.homedir(),
-      env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
-    });
-    const pane = { id, term, pty: proc, title: path.basename(shell), process: path.basename(shell), ready: false, pending: '', exited: false };
+    const [file, args] = session
+      ? [this.ptmux, this.sessions.includes(session) ? ['attach', '-t', session] : ['new', '-s', session]]
+      : [shell, this.config.shellArgs || []];
+    const env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' };
+    // Started from inside a ptmux session, the app would pass its $PTMUX on, and
+    // `ptmux new` refuses to nest.
+    delete env.PTMUX;
+    const proc = pty.spawn(file, args, { name: 'xterm-256color', cols: 80, rows: 24, cwd: os.homedir(), env });
+    const name = path.basename(file);
+    const pane = { id, pty: proc, session, title: session ?? name, process: name, ready: false, pending: '', exited: false };
     term.panes.set(id, pane);
+    if (session && !this.sessions.includes(session)) setTimeout(() => this.refreshSessions(), 500);
 
     proc.onData((data) => {
       // Hold output until the pane's xterm is listening so the first prompt is not lost.
       if (!pane.ready) pane.pending += data;
-      else if (!pane.term.win.isDestroyed()) pane.term.win.webContents.send('pty:data', id, data);
+      else if (!term.win.isDestroyed()) term.win.webContents.send('pty:data', id, data);
     });
     proc.onExit(() => {
       pane.exited = true;
-      this.#removePane(pane.term, id);
+      this.#removePane(term, id);
     });
     return id;
+  }
+
+  // Runs `ptmux ls`. The planner shows the result in each pane's menu.
+  refreshSessions() {
+    if (!this.ptmux) return Promise.resolve();
+    return new Promise((resolve) => {
+      execFile(this.ptmux, ['ls'], { timeout: 2000 }, (err, stdout) => {
+        const names = err ? [] : stdout.split('\n').filter(Boolean);
+        if (names.join('\n') !== this.sessions.join('\n')) {
+          this.sessions = names;
+          if (this.#plannerOpen()) this.planner.webContents.send('planner:state', this.#plannerState());
+        }
+        resolve();
+      });
+    });
+  }
+
+  // A planner menu choice: 'shell', 'ptmux:new', or 'ptmux:<name>'. Returns the session
+  // name, or null for a shell. A new session gets the smallest free number, like
+  // `ptmux new` without -s, skipping names that panes already use.
+  async #resolveSource(source) {
+    if (source === 'shell') return null;
+    if (!this.ptmux) throw new Error('ptmux is not installed');
+    if (source === 'ptmux:new') {
+      await this.refreshSessions();
+      const taken = new Set(this.sessions);
+      for (const term of this.terminals.values()) for (const p of term.panes.values()) if (p.session) taken.add(p.session);
+      for (let n = 0; ; n++) if (!taken.has(String(n))) return String(n);
+    }
+    const name = typeof source === 'string' && source.startsWith('ptmux:') ? source.slice(6) : null;
+    if (!validSession(name)) throw new Error('unknown pane source');
+    return name;
   }
 
   #removePane(term, paneId) {
@@ -263,36 +333,6 @@ class WindowManager extends EventEmitter {
   #setLayout(term, tree, active) {
     term.layout = tree;
     term.activePane = tree ? active : null;
-  }
-
-  // Stops sending a pane's output to its window and asks that window for the pane's
-  // screen and scrollback. Output from then on waits in pane.pending, after the
-  // snapshot, for the window that shows the pane next.
-  #detach(pane) {
-    pane.ready = false;
-    const term = pane.term;
-    if (!term.ready || term.win.isDestroyed()) return Promise.resolve('');
-    const requestId = crypto.randomUUID();
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this.snapshots.delete(requestId);
-        resolve('');
-      }, 1000);
-      this.snapshots.set(requestId, (data) => {
-        clearTimeout(timer);
-        resolve(data);
-      });
-      term.win.webContents.send('pane:serialize', requestId, pane.id);
-    });
-  }
-
-  // The pane did not move after all: its window still has its xterm, so resume output.
-  #reattach(pane) {
-    const term = pane.term;
-    if (term.closed || term.win.isDestroyed()) return;
-    pane.ready = true;
-    if (pane.pending) term.win.webContents.send('pty:data', pane.id, pane.pending);
-    pane.pending = '';
   }
 
   // saved is a pane shape; empty: true opens it with no panes (a locked window saved
@@ -325,7 +365,9 @@ class WindowManager extends EventEmitter {
     const term = { id, win, panes: new Map(), layout: null, activePane: null, locked: Boolean(locked), moveMode: false, alwaysOnTop: false, ready: false };
     this.terminals.set(id, term);
     if (!(empty && term.locked)) {
-      term.layout = saved ? layout.hydrate(saved, () => this.#spawnPane(term)) : layout.pane(this.#spawnPane(term));
+      term.layout = saved
+        ? layout.hydrate(saved, (leaf) => this.#spawnPane(term, leaf?.ptmux), isLeaf)
+        : layout.pane(this.#spawnPane(term));
       term.activePane = layout.leaves(term.layout)[0];
     }
 
@@ -368,8 +410,10 @@ class WindowManager extends EventEmitter {
     return id;
   }
 
-  // Startup: one window per saved entry, with its panes and lock.
-  restore(saved) {
+  // Startup: one window per saved entry, with its panes and lock. Session panes
+  // reattach to sessions that outlived the app and restart the ones that did not.
+  async restore(saved) {
+    await this.refreshSessions();
     if (!Array.isArray(saved) || saved.length === 0) return this.create();
     const ids = saved.map((w) => this.create({ layout: w?.panes ?? undefined, empty: w?.panes === null, locked: w?.locked }));
     return ids[0];
@@ -389,6 +433,7 @@ class WindowManager extends EventEmitter {
           id: t.id,
           title: active?.title ?? '',
           process: active?.process ?? '',
+          session: active?.session ?? null,
           x: b.x,
           y: b.y,
           width: b.width,
@@ -427,12 +472,29 @@ class WindowManager extends EventEmitter {
     return true;
   }
 
-  // A new shell in an empty window.
-  addPane(id) {
+  // A shell or ptmux session (see #resolveSource) in an empty window.
+  async addPane(id, source = 'shell') {
+    const session = await this.#resolveSource(source);
     const term = this.get(id);
     if (!term || term.layout) return false;
-    const paneId = this.#spawnPane(term);
+    const paneId = this.#spawnPane(term, session);
     this.#setLayout(term, layout.pane(paneId), paneId);
+    this.#pushLayout(term);
+    return true;
+  }
+
+  // Swaps what a pane shows (see #resolveSource) for a new pane in the same place. A
+  // ptmux client that goes away leaves its session running.
+  async setPaneSource(id, paneId, source) {
+    const session = await this.#resolveSource(source);
+    const term = this.get(id);
+    const old = term?.panes.get(paneId);
+    if (!old || term.closed || old.session === session) return false;
+    const newId = this.#spawnPane(term, session);
+    // Out of the map first, so the old pty's exit does not remove the pane's place.
+    term.panes.delete(paneId);
+    old.pty.kill();
+    this.#setLayout(term, layout.replacePane(term.layout, paneId, newId), term.activePane === paneId ? newId : term.activePane);
     this.#pushLayout(term);
     return true;
   }
@@ -517,76 +579,20 @@ class WindowManager extends EventEmitter {
     return true;
   }
 
-  // Moves pane paneId of window fromId onto pane targetId of window toId. The center
-  // zone trades the two panes' places; an edge zone puts the pane beside the target.
-  // With no targetId the pane fills the empty window toId. Across windows the shell
-  // keeps running and its screen and scrollback come along. Moving a window's last
-  // pane out closes that window unless it is locked.
-  async movePane(fromId, paneId, toId, targetId, zone) {
+  // Moves pane paneId onto pane targetId of the same window. The center zone trades
+  // the two panes' places; an edge zone puts the pane beside the target. Panes do not
+  // move between windows; to show a session elsewhere, pick it in another pane.
+  movePane(id, paneId, targetId, zone) {
     if (!(zone in ZONES)) throw new Error('unknown drop zone');
-    const from = this.get(fromId);
-    const to = this.get(toId);
-    const pane = from?.panes.get(paneId);
-    if (!pane || !to || (from === to && !targetId)) return false;
-    const target = targetId ? to.panes.get(targetId) : null;
-    if (targetId ? !target || paneId === targetId : to.layout) return false;
-    // Into an empty window: there is nothing to swap with, so it is a plain move.
-    const place = target ? ZONES[zone] : ZONES.right;
-
-    if (from === to) {
-      from.layout = place
-        ? layout.splitPane(layout.removePane(from.layout, paneId), targetId, place.dir, paneId, place.before)
-        : layout.swapPanes(from.layout, paneId, targetId);
-      from.activePane = paneId;
-      this.#pushLayout(from);
-      return true;
-    }
-
-    if (from.moving || to.moving) return false;
-    from.moving = true;
-    to.moving = true;
-    try {
-      const [snapshot, targetSnapshot] = await Promise.all([this.#detach(pane), place ? null : this.#detach(target)]);
-      // A window or pane can go away while the snapshots are on their way.
-      const targetGone = target ? target.exited || !to.panes.has(targetId) : Boolean(to.layout);
-      if (from.closed || to.closed || pane.exited || targetGone || !from.panes.has(paneId)) {
-        this.#reattach(pane);
-        if (!place) this.#reattach(target);
-        return false;
-      }
-      pane.pending = snapshot + pane.pending;
-      from.panes.delete(paneId);
-      to.panes.set(paneId, pane);
-      pane.term = to;
-
-      if (place) {
-        this.#setLayout(to, target ? layout.splitPane(to.layout, targetId, place.dir, paneId, place.before) : layout.pane(paneId), paneId);
-        const heir = layout.heir(from.layout, paneId);
-        const rest = layout.removePane(from.layout, paneId);
-        this.#pushLayout(to);
-        if (rest || from.locked) {
-          this.#setLayout(from, rest, from.activePane === paneId ? heir : from.activePane);
-          this.#pushLayout(from);
-        } else {
-          from.win.close();
-        }
-      } else {
-        target.pending = targetSnapshot + target.pending;
-        to.panes.delete(targetId);
-        from.panes.set(targetId, target);
-        target.term = from;
-        from.layout = layout.replacePane(from.layout, paneId, targetId);
-        to.layout = layout.replacePane(to.layout, targetId, paneId);
-        if (from.activePane === paneId) from.activePane = targetId;
-        if (to.activePane === targetId) to.activePane = paneId;
-        this.#pushLayout(from);
-        this.#pushLayout(to);
-      }
-      return true;
-    } finally {
-      from.moving = false;
-      to.moving = false;
-    }
+    const term = this.get(id);
+    if (!term || paneId === targetId || !term.panes.has(paneId) || !term.panes.has(targetId)) return false;
+    const place = ZONES[zone];
+    term.layout = place
+      ? layout.splitPane(layout.removePane(term.layout, paneId), targetId, place.dir, paneId, place.before)
+      : layout.swapPanes(term.layout, paneId, targetId);
+    term.activePane = paneId;
+    this.#pushLayout(term);
+    return true;
   }
 
   resizeSplit(id, splitPath, sizes) {
@@ -611,6 +617,7 @@ class WindowManager extends EventEmitter {
   // window and not a terminal, so it stays out of this.terminals and the focus list.
   // It stays on top because the capture windows fill the screen.
   openPlanner() {
+    this.refreshSessions();
     if (this.#plannerOpen()) {
       this.planner.show();
       this.planner.focus();

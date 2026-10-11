@@ -211,7 +211,6 @@ main {
   padding: 8px;
 }
 .empty p { margin: 0; }
-.empty[data-drop] { border-color: var(--accent); background: rgba(76, 155, 255, 0.15); }
 
 /* Follows the pointer while a pane is dragged. */
 .ghost {
@@ -232,14 +231,17 @@ main {
   pointer-events: none;
 }
 body:has(.ghost) { cursor: grabbing; }
-.empty button {
-  padding: 5px 12px;
+
+/* What a pane shows: a shell or a ptmux session. */
+select.source {
+  max-width: 90%;
+  padding: 2px 4px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 4px;
   background: #262930;
   color: var(--text);
-  font: 13px system-ui, sans-serif;
+  font: 12px system-ui, sans-serif;
   cursor: pointer;
 }
-.empty button:hover { border-color: var(--accent); }
-.empty button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+select.source:hover { border-color: var(--accent); }
+select.source:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

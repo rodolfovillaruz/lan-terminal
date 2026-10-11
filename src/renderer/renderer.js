@@ -9,7 +9,7 @@ async function main() {
 
   const root = document.getElementById('terminal');
   const overlay = document.getElementById('move-overlay');
-  const panes = new Map(); // paneId -> { el, term, fit, serialize, syncSize }
+  const panes = new Map(); // paneId -> { el, term, fit, syncSize }
   let active = null;
 
   const createPane = (id) => {
@@ -25,14 +25,6 @@ async function main() {
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
-    // Lets the pane's screen and scrollback move with it to another window. Without the
-    // addon (e.g. an install that missed `npm install`) panes still work, and a moved
-    // pane starts blank.
-    let serialize = null;
-    if (typeof SerializeAddon !== 'undefined') {
-      serialize = new SerializeAddon.SerializeAddon();
-      term.loadAddon(serialize);
-    }
     // xterm measures its container on open, so the element must be in the page first.
     root.appendChild(el);
     term.open(el);
@@ -60,7 +52,7 @@ async function main() {
       window.terminal.focusPane(id);
     });
 
-    const p = { el, term, fit, serialize, syncSize };
+    const p = { el, term, fit, syncSize };
     panes.set(id, p);
     window.terminal.paneReady(id);
     return p;
@@ -84,16 +76,6 @@ async function main() {
   };
 
   window.terminal.onData((id, data) => panes.get(id)?.term.write(data));
-  window.terminal.onSerialize((requestId, id) => {
-    const p = panes.get(id);
-    let data = '';
-    try {
-      data = p?.serialize ? p.serialize.serialize({ scrollback: 10000 }) : '';
-    } catch (err) {
-      console.warn('Could not serialize pane', err);
-    }
-    window.terminal.serialized(requestId, data);
-  });
   window.terminal.onLayout((state) => {
     const seen = new Set();
     // A locked window with no panes shows just its background.
