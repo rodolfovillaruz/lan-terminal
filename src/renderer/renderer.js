@@ -224,10 +224,10 @@ async function main() {
       input({ type: 'keycode', action: 1, keycode, metastate });
     };
 
-    // Ctrl+Shift+X captures the mouse and keyboard: they become a USB mouse and
+    // Ctrl+Shift+Alt+X captures the mouse and keyboard: they become a USB mouse and
     // keyboard on the device, the pointer is locked to the pane (its cursor shows on
     // the device instead), and every key, shortcuts included, goes to the device.
-    // Ctrl+Shift+X again releases them, and so do losing the pointer lock, leaving the
+    // Ctrl+Shift+Alt+X again releases them, and so do losing the pointer lock, leaving the
     // pane and the stream stopping. Where the
     // device cannot put a USB mouse on the pane's display (a new display before
     // Android 15), only the keyboard is captured and the mouse stays a finger.
@@ -318,7 +318,7 @@ async function main() {
     const metaOf = (e) => (e.shiftKey ? 0x1 : 0) | (e.altKey ? 0x2 : 0) | (e.ctrlKey ? 0x1000 : 0) | (e.metaKey ? 0x10000 : 0);
     for (const type of ['keydown', 'keyup']) {
       canvas.addEventListener(type, (e) => {
-        if (e.ctrlKey && e.shiftKey && e.code === 'KeyX') {
+        if (e.ctrlKey && e.shiftKey && e.altKey && e.code === 'KeyX') {
           e.preventDefault();
           if (type === 'keydown' && !e.repeat) setCaptured(!captured);
           return;

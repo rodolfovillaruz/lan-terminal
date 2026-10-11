@@ -151,7 +151,7 @@ class WindowManager extends EventEmitter {
         console.warn('scrcpy:input:', err.message);
       }
     });
-    // Ctrl+Shift+X in a device pane: its mouse and keyboard become a USB mouse and
+    // Ctrl+Shift+Alt+X in a device pane: its mouse and keyboard become a USB mouse and
     // keyboard on the device, or stop being one.
     ipcMain.on('scrcpy:capture', (event, paneId, on) => {
       const pane = this.#pane(event, paneId);
