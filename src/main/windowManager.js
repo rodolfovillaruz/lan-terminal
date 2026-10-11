@@ -1,13 +1,12 @@
 const { app, BrowserWindow, ipcMain, screen } = require('electron');
 const { EventEmitter } = require('events');
-const { execFile } = require('child_process');
-const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const pty = require('node-pty');
 const { save: saveConfig } = require('./config');
 const layout = require('./layout');
+const mux = require('./mux');
 
 // Where a dragged pane lands relative to the pane it is dropped on.
 const ZONES = {
@@ -18,28 +17,13 @@ const ZONES = {
   bottom: { dir: 'col', before: false },
 };
 
-// ptmux (the pseudo-terminal project) from config, $PATH or cargo's install dir. The
-// systemd user service runs without ~/.cargo/bin on its PATH, hence the last one.
-function findPtmux(configured) {
-  if (configured) return configured;
-  const dirs = [...(process.env.PATH || '').split(path.delimiter), path.join(os.homedir(), '.cargo', 'bin')];
-  for (const dir of dirs.filter(Boolean)) {
-    const file = path.join(dir, 'ptmux');
-    try {
-      fs.accessSync(file, fs.constants.X_OK);
-      return file;
-    } catch {
-      // not here
-    }
-  }
-  return null;
-}
-
-// ptmux session names are socket file names, so they cannot contain '/' or '.'.
-const validSession = (name) => typeof name === 'string' && name !== '' && !/[/.]/.test(name);
-
-// A saved pane shape leaf: 'pane' for a shell, { ptmux: name } for a session.
-const isLeaf = (s) => s === 'pane' || validSession(s?.ptmux);
+// A saved pane shape leaf: 'pane' for a shell, or { <mux>: name } for a session,
+// e.g. { tmux: 'work' }.
+const leafSession = (s) => {
+  const found = mux.NAMES.filter((m) => mux.validSession(s?.[m]));
+  return found.length === 1 ? { mux: found[0], name: s[found[0]] } : null;
+};
+const isLeaf = (s) => s === 'pane' || leafSession(s) !== null;
 
 class WindowManager extends EventEmitter {
   constructor(config) {
@@ -47,13 +31,15 @@ class WindowManager extends EventEmitter {
     this.config = config;
     // id (UUID) -> { id, win, panes, layout, activePane, locked, moveMode, alwaysOnTop, ready }
     // layout is null for a window with no panes, which only a locked window can be.
-    // panes: paneId -> { id, pty, session, title, process, ready, pending, exited }
-    // session is the ptmux session the pane is attached to, or null for a plain shell.
+    // panes: paneId -> { id, pty, mux, session, title, process, ready, pending, exited }
+    // mux and session name the multiplexer session the pane is attached to (see
+    // mux.js); both are null for a plain shell.
     this.terminals = new Map();
     this.saveTimer = null;
     this.planner = null; // the layout planner window, while open
-    this.ptmux = findPtmux(config.ptmux);
-    this.sessions = []; // live ptmux sessions as of the last `ptmux ls`
+    // Installed multiplexers: mux -> binary path.
+    this.muxes = new Map(mux.NAMES.map((m) => [m, mux.find(m, config[m])]).filter(([, bin]) => bin));
+    this.sessions = new Map(); // mux -> Map(session name -> target), as last listed
     this.quitting = false;
     app.on('before-quit', () => { this.quitting = true; });
     // systemd stops the service with SIGTERM. Quit through the app so the locked
@@ -203,7 +189,7 @@ class WindowManager extends EventEmitter {
   #paneList(term) {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
-      return { id, title: p.title, process: p.process, session: p.session, pid: p.pty.pid };
+      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, pid: p.pty.pid };
     });
   }
 
@@ -211,8 +197,8 @@ class WindowManager extends EventEmitter {
     const { width, height } = this.#fullBounds();
     return {
       aspect: width / height,
-      ptmux: Boolean(this.ptmux),
-      sessions: this.sessions,
+      // Each installed multiplexer and its running sessions, for the pane menus.
+      muxes: [...this.muxes.keys()].map((m) => ({ id: m, sessions: [...(this.sessions.get(m)?.keys() ?? [])] })),
       windows: [...this.terminals.values()]
         .filter((t) => !t.closed && !t.win.isDestroyed())
         .map((t) => ({ id: t.id, focused: t.win.isFocused(), locked: t.locked, layout: t.layout, active: t.activePane, panes: this.#paneList(t) })),
@@ -238,8 +224,8 @@ class WindowManager extends EventEmitter {
   #saveSoon() {
     if (this.quitting) return;
     const leafShape = (t) => (id) => {
-      const session = t.panes.get(id)?.session;
-      return session ? { ptmux: session } : 'pane';
+      const p = t.panes.get(id);
+      return p?.session ? { [p.mux]: p.session } : 'pane';
     };
     const saved = [...this.terminals.values()]
       .filter((t) => !t.closed)
@@ -251,27 +237,28 @@ class WindowManager extends EventEmitter {
     }, 500);
   }
 
-  // With a session name the pane runs a ptmux client attached to that session,
-  // starting the session if it is not running. The session outlives the pane: closing
-  // the pane only detaches. Without ptmux the pane falls back to a shell.
+  // With a session ({ mux, name }) the pane runs that multiplexer's client attached to
+  // it, starting the session if it is not running. The session outlives the pane:
+  // closing the pane only detaches. A multiplexer that is not installed falls back to
+  // a shell.
   #spawnPane(term, session = null) {
-    if (!this.ptmux || !validSession(session)) session = null;
+    const bin = session && mux.validSession(session.name) ? this.muxes.get(session.mux) : null;
+    if (!bin) session = null;
     const id = crypto.randomUUID();
     const shell = this.config.shell || process.env.SHELL || os.userInfo().shell || '/bin/bash';
-    const [file, args] = session
-      ? [this.ptmux, this.sessions.includes(session) ? ['attach', '-t', session] : ['new', '-s', session]]
-      : [shell, this.config.shellArgs || []];
+    const target = session && this.sessions.get(session.mux)?.get(session.name);
+    const [file, args] = session ? [bin, mux.MUXES[session.mux].spawn(session.name, target)] : [shell, this.config.shellArgs || []];
     const env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' };
-    // Started from inside a ptmux session, the app would pass its $PTMUX on, and
-    // `ptmux new` refuses to nest.
-    delete env.PTMUX;
+    // Started from inside a multiplexer session, the app would pass its variables on
+    // and the clients would nest.
+    for (const m of mux.NAMES) delete env[mux.MUXES[m].env];
     const proc = pty.spawn(file, args, { name: 'xterm-256color', cols: 80, rows: 24, cwd: os.homedir(), env });
     const name = path.basename(file);
     // The title starts as the program's name, which labels hide, until the program
     // sets its own.
-    const pane = { id, pty: proc, session, title: name, process: name, ready: false, pending: '', exited: false };
+    const pane = { id, pty: proc, mux: session?.mux ?? null, session: session?.name ?? null, title: name, process: name, ready: false, pending: '', exited: false };
     term.panes.set(id, pane);
-    if (session && !this.sessions.includes(session)) setTimeout(() => this.refreshSessions(), 500);
+    if (session && !target) setTimeout(() => this.refreshSessions(), 500);
 
     proc.onData((data) => {
       // Hold output until the pane's xterm is listening so the first prompt is not lost.
@@ -285,36 +272,34 @@ class WindowManager extends EventEmitter {
     return id;
   }
 
-  // Runs `ptmux ls`. The planner shows the result in each pane's menu.
-  refreshSessions() {
-    if (!this.ptmux) return Promise.resolve();
-    return new Promise((resolve) => {
-      execFile(this.ptmux, ['ls'], { timeout: 2000 }, (err, stdout) => {
-        const names = err ? [] : stdout.split('\n').filter(Boolean);
-        if (names.join('\n') !== this.sessions.join('\n')) {
-          this.sessions = names;
-          if (this.#plannerOpen()) this.planner.webContents.send('planner:state', this.#plannerState());
-        }
-        resolve();
-      });
-    });
+  // Lists every installed multiplexer's sessions. The planner shows them in each
+  // pane's menu.
+  async refreshSessions() {
+    const lists = await Promise.all([...this.muxes].map(async ([m, bin]) => [m, await mux.list(m, bin)]));
+    const next = new Map(lists);
+    const key = (sessions) => JSON.stringify([...sessions].map(([m, names]) => [m, [...names]]));
+    if (key(next) === key(this.sessions)) return;
+    this.sessions = next;
+    if (this.#plannerOpen()) this.planner.webContents.send('planner:state', this.#plannerState());
   }
 
-  // A planner menu choice: 'shell', 'ptmux:new', or 'ptmux:<name>'. Returns the session
-  // name, or null for a shell. A new session gets the smallest free number, like
-  // `ptmux new` without -s, skipping names that panes already use.
+  // A planner menu choice: 'shell', '<mux>:new', or '<mux>:<name>' (e.g. 'tmux:work').
+  // Returns { mux, name }, or null for a shell. A new session gets the smallest free
+  // number, like `ptmux new` and `tmux new` without a name, skipping names that panes
+  // already use.
   async #resolveSource(source) {
     if (source === 'shell') return null;
-    if (!this.ptmux) throw new Error('ptmux is not installed');
-    if (source === 'ptmux:new') {
+    const [, m, name] = (typeof source === 'string' && source.match(/^([a-z]+):(.*)$/)) || [];
+    if (!mux.MUXES[m]) throw new Error('unknown pane source');
+    if (!this.muxes.has(m)) throw new Error(`${m} is not installed`);
+    if (name === 'new') {
       await this.refreshSessions();
-      const taken = new Set(this.sessions);
-      for (const term of this.terminals.values()) for (const p of term.panes.values()) if (p.session) taken.add(p.session);
-      for (let n = 0; ; n++) if (!taken.has(String(n))) return String(n);
+      const taken = new Set(this.sessions.get(m)?.keys());
+      for (const term of this.terminals.values()) for (const p of term.panes.values()) if (p.mux === m) taken.add(p.session);
+      for (let n = 0; ; n++) if (!taken.has(String(n))) return { mux: m, name: String(n) };
     }
-    const name = typeof source === 'string' && source.startsWith('ptmux:') ? source.slice(6) : null;
-    if (!validSession(name)) throw new Error('unknown pane source');
-    return name;
+    if (!mux.validSession(name)) throw new Error('bad session name');
+    return { mux: m, name };
   }
 
   #removePane(term, paneId) {
@@ -368,7 +353,7 @@ class WindowManager extends EventEmitter {
     this.terminals.set(id, term);
     if (!(empty && term.locked)) {
       term.layout = saved
-        ? layout.hydrate(saved, (leaf) => this.#spawnPane(term, leaf?.ptmux), isLeaf)
+        ? layout.hydrate(saved, (leaf) => this.#spawnPane(term, leafSession(leaf)), isLeaf)
         : layout.pane(this.#spawnPane(term));
       term.activePane = layout.leaves(term.layout)[0];
     }
@@ -435,6 +420,7 @@ class WindowManager extends EventEmitter {
           id: t.id,
           title: active?.title ?? '',
           process: active?.process ?? '',
+          mux: active?.mux ?? null,
           session: active?.session ?? null,
           x: b.x,
           y: b.y,
@@ -474,7 +460,7 @@ class WindowManager extends EventEmitter {
     return true;
   }
 
-  // A shell or ptmux session (see #resolveSource) in an empty window.
+  // A shell or multiplexer session (see #resolveSource) in an empty window.
   async addPane(id, source = 'shell') {
     const session = await this.#resolveSource(source);
     const term = this.get(id);
@@ -486,12 +472,12 @@ class WindowManager extends EventEmitter {
   }
 
   // Swaps what a pane shows (see #resolveSource) for a new pane in the same place. A
-  // ptmux client that goes away leaves its session running.
+  // multiplexer client that goes away leaves its session running.
   async setPaneSource(id, paneId, source) {
     const session = await this.#resolveSource(source);
     const term = this.get(id);
     const old = term?.panes.get(paneId);
-    if (!old || term.closed || old.session === session) return false;
+    if (!old || term.closed || (old.mux === (session?.mux ?? null) && old.session === (session?.name ?? null))) return false;
     const newId = this.#spawnPane(term, session);
     // Out of the map first, so the old pty's exit does not remove the pane's place.
     term.panes.delete(paneId);

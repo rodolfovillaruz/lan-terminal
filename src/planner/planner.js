@@ -190,19 +190,25 @@ function dropZone(el, e) {
   return edges.sort((a, b) => a[1] - b[1])[0][0];
 }
 
-// What a pane shows, as one line: "ptmux 2 — vim notes.md", "bash", "vim — notes.md".
+// A pane's program: "tmux work", "ptmux 2", "bash", "vim".
+function paneName(info) {
+  return info.session ? `${info.mux} ${info.session}` : info.process;
+}
+
+// What a pane shows, as one line: "tmux work — vim notes.md", "bash", "vim — notes.md".
 function paneLabel(info) {
-  const name = info.session ? `ptmux ${info.session}` : info.process;
+  const name = paneName(info);
   return info.title && info.title !== name && info.title !== info.process ? `${name} — ${info.title}` : name;
 }
 
-// The menu that picks what a pane shows: a shell, a running ptmux session, or a new
-// session. current is the pane's choice, or null for a placeholder (an empty window).
+// The menu that picks what a pane shows: a shell, or for each installed multiplexer
+// (ptmux, tmux, screen) a running session or a new one. current is the pane's choice
+// ('shell' or '<mux>:<name>'), or null for a placeholder (an empty window).
 // While the menu has focus, redraws wait, or the open menu would vanish.
 function sourceMenu(current, onChoose) {
   const select = document.createElement('select');
   select.className = 'source';
-  select.title = 'What this pane shows. A ptmux session keeps running when the pane closes or switches.';
+  select.title = 'What this pane shows. A ptmux, tmux or screen session keeps running when the pane closes or switches.';
   const option = (parent, value, label) => {
     const o = document.createElement('option');
     o.value = value;
@@ -212,14 +218,14 @@ function sourceMenu(current, onChoose) {
   };
   if (current === null) option(select, '', 'Open…').disabled = true;
   option(select, 'shell', 'Shell');
-  if (state.ptmux) {
+  for (const mux of state.muxes) {
     const group = document.createElement('optgroup');
-    group.label = 'ptmux sessions';
-    const names = new Set(state.sessions);
-    // The pane's own session, even if `ptmux ls` has not seen it yet.
-    if (current?.startsWith('ptmux:')) names.add(current.slice(6));
-    for (const name of names) option(group, `ptmux:${name}`, name);
-    option(group, 'ptmux:new', 'New session');
+    group.label = `${mux.id} sessions`;
+    const names = new Set(mux.sessions);
+    // The pane's own session, even if the last listing has not seen it yet.
+    if (current?.startsWith(`${mux.id}:`)) names.add(current.slice(mux.id.length + 1));
+    for (const name of names) option(group, `${mux.id}:${name}`, name);
+    option(group, `${mux.id}:new`, `New ${mux.id} session`);
     select.appendChild(group);
   }
   select.value = current ?? '';
@@ -247,7 +253,7 @@ function paneBox(win, id) {
   el.title = proc.textContent;
   const zone = document.createElement('div');
   zone.className = 'zone';
-  const source = sourceMenu(info.session ? `ptmux:${info.session}` : 'shell', (value) => window.planner.setSource(win.id, id, value));
+  const source = sourceMenu(info.session ? `${info.mux}:${info.session}` : 'shell', (value) => window.planner.setSource(win.id, id, value));
 
   const tools = document.createElement('div');
   tools.className = 'tools';
@@ -264,7 +270,7 @@ function paneBox(win, id) {
   return el;
 }
 
-// A locked window with no panes: start a shell or a ptmux session in it.
+// A locked window with no panes: start a shell or a multiplexer session in it.
 function emptyBox(win) {
   const el = document.createElement('div');
   el.className = 'empty';
@@ -286,7 +292,7 @@ function windowCard(win, number) {
   const name = document.createElement('span');
   name.className = 'name';
   const active = win.panes.find((p) => p.id === win.active);
-  name.textContent = `Window ${number}${active ? ` · ${active.session ? `ptmux ${active.session}` : active.process}` : ''}`;
+  name.textContent = `Window ${number}${active ? ` · ${paneName(active)}` : ''}`;
   const tools = document.createElement('span');
   tools.className = 'tools';
   const lock = button(

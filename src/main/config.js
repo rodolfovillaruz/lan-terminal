@@ -12,7 +12,10 @@ const DEFAULTS = {
   token: null, // generated on first run
   shell: null, // null = use $SHELL / the account's login shell
   shellArgs: ['-l'],
-  ptmux: null, // null = find ptmux on $PATH or in ~/.cargo/bin
+  // Multiplexer binaries for session panes; null = find on $PATH or in ~/.cargo/bin.
+  ptmux: null,
+  tmux: null,
+  screen: null,
   fontSize: 16,
   width: null, // null = primary display width
   height: null, // null = primary display height
