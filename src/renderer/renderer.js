@@ -25,9 +25,14 @@ async function main() {
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
-    // Lets the pane's screen and scrollback move with it to another window.
-    const serialize = new SerializeAddon.SerializeAddon();
-    term.loadAddon(serialize);
+    // Lets the pane's screen and scrollback move with it to another window. Without the
+    // addon (e.g. an install that missed `npm install`) panes still work, and a moved
+    // pane starts blank.
+    let serialize = null;
+    if (typeof SerializeAddon !== 'undefined') {
+      serialize = new SerializeAddon.SerializeAddon();
+      term.loadAddon(serialize);
+    }
     // xterm measures its container on open, so the element must be in the page first.
     root.appendChild(el);
     term.open(el);
@@ -83,7 +88,7 @@ async function main() {
     const p = panes.get(id);
     let data = '';
     try {
-      data = p ? p.serialize.serialize({ scrollback: 10000 }) : '';
+      data = p?.serialize ? p.serialize.serialize({ scrollback: 10000 }) : '';
     } catch (err) {
       console.warn('Could not serialize pane', err);
     }
