@@ -21,6 +21,13 @@ const HEADER = 12; // session packet, or a media packet's flags, PTS and size
 // "adb-0921...-wXz3Kg._adb-tls-connect._tcp". Never a leading '-' (an option).
 const validSerial = (s) => typeof s === 'string' && /^[A-Za-z0-9_.:\[\]@%+-]+$/.test(s) && !s.startsWith('-');
 
+// A new virtual display instead of the device's own screen, as scrcpy's --new-display
+// takes it: '' (the main display's size and density), '1920x1080', '/240' or
+// '1920x1080/240'. 'fit' or 'fit/<dpi>' is a flex display (--flex-display), resized
+// to keep filling its pane.
+const validDisplay = (d) => typeof d === 'string' && /^(fit|(\d{2,5}x\d{2,5})?)(\/\d{2,4})?$/.test(d);
+const isFit = (d) => typeof d === 'string' && d.startsWith('fit');
+
 function run(bin, args, timeout = 10000) {
   return new Promise((resolve, reject) => {
     execFile(bin, args, { timeout }, (err, stdout, stderr) => {
@@ -77,7 +84,7 @@ async function devices(adb) {
 }
 
 // Control messages (client -> device), as scrcpy's app/src/control_msg.c writes them.
-const TYPE = { keycode: 0, text: 1, touch: 2, scroll: 3, backOrScreenOn: 4, resetVideo: 17 };
+const TYPE = { keycode: 0, text: 1, touch: 2, scroll: 3, backOrScreenOn: 4, resetVideo: 17, resizeDisplay: 21 };
 const POINTER_FINGER = 0xfffffffffffffffen; // SC_POINTER_ID_GENERIC_FINGER
 const u16fp = (f) => (f >= 1 ? 0xffff : Math.round(Math.max(0, f) * 0x10000));
 const i16fp = (f) => (f >= 1 ? 0x7fff : Math.round(Math.max(-1, f) * 0x8000));
@@ -86,6 +93,7 @@ const i16fp = (f) => (f >= 1 ? 0x7fff : Math.round(Math.max(-1, f) * 0x8000));
 //    | { type: 'scroll', x, y, width, height, h, v }   (h and v in [-16, 16])
 //    | { type: 'keycode', action, keycode, metastate }
 //    | { type: 'text', text } | { type: 'backOrScreenOn', action } | { type: 'resetVideo' }
+//    | { type: 'resizeDisplay', width, height }   (a flex display's new size)
 // x, y are in video pixels; width, height the video size they refer to.
 function encode(msg) {
   const position = (buf, at) => {
@@ -132,6 +140,13 @@ function encode(msg) {
       return Buffer.from([TYPE.backOrScreenOn, msg.action]);
     case 'resetVideo':
       return Buffer.from([TYPE.resetVideo]);
+    case 'resizeDisplay': {
+      const buf = Buffer.alloc(5);
+      buf[0] = TYPE.resizeDisplay;
+      buf.writeUInt16BE(msg.width, 1);
+      buf.writeUInt16BE(msg.height, 3);
+      return buf;
+    }
     default:
       throw new Error('unknown control message');
   }
@@ -164,13 +179,18 @@ function connect(port, deadline, cancelled) {
   });
 }
 
-// One device's screen. Emits 'name' (device name), 'session' ({ width, height },
+// One device's screen, or with options.display a new virtual display on it (see
+// validDisplay); options.fitSize is a flex display's first size, options.keepApps
+// moves the apps on a new display to the main screen when it closes, and
+// options.imePolicy is 'local', 'fallback' or 'hide' (where the keyboard shows).
+// Emits 'name' (device name), 'session' ({ width, height },
 // again on every rotation), 'packet' ({ config, key, data }) and once 'end' (an
 // Error, or null after stop()). A failed start() ends it too, so 'end' is the one
 // place to learn that it stopped.
 class Mirror extends EventEmitter {
-  constructor({ adb, version, server }, serial) {
+  constructor({ adb, version, server }, serial, options = {}) {
     super();
+    this.options = options;
     this.adb = adb;
     this.version = version;
     this.server = server;
@@ -196,6 +216,7 @@ class Mirror extends EventEmitter {
     this.proc = spawn(this.adb, [
       '-s', this.serial, 'shell', `CLASSPATH=${REMOTE_PATH}`, 'app_process', '/', 'com.genymobile.scrcpy.Server', this.version,
       `scid=${scid}`, 'log_level=info', 'tunnel_forward=true', 'audio=false', 'video_codec=h264',
+      ...this.#displayArgs(),
     ]);
     // The last line the server printed explains why it stopped.
     let last = '';
@@ -217,6 +238,20 @@ class Mirror extends EventEmitter {
     if (this.ended) return this.#cleanup();
     this.#read();
     this.video.resume();
+  }
+
+  #displayArgs() {
+    const { display, fitSize, keepApps, imePolicy } = this.options;
+    if (!validDisplay(display)) return [];
+    const args = [];
+    if (isFit(display)) {
+      args.push(`new_display=${fitSize ? `${fitSize.width}x${fitSize.height}` : ''}${display.slice(3)}`, 'flex_display=true');
+    } else {
+      args.push(`new_display=${display}`);
+    }
+    if (keepApps) args.push('vd_destroy_content=false');
+    if (['local', 'fallback', 'hide'].includes(imePolicy)) args.push(`display_ime_policy=${imePolicy}`);
+    return args;
   }
 
   // Device name, codec id, then session and media packets (scrcpy's doc/develop.md).
@@ -281,4 +316,4 @@ class Mirror extends EventEmitter {
   }
 }
 
-module.exports = { validSerial, findAdb, findScrcpy, devices, encode, Mirror };
+module.exports = { validSerial, validDisplay, isFit, findAdb, findScrcpy, devices, encode, Mirror };

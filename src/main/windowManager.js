@@ -20,13 +20,14 @@ const ZONES = {
 };
 
 // What a pane shows, as a source: null for a shell, { mux, name } for a multiplexer
-// session, { app, instance, tag } for a linuxserver app (e.g. chromium 0), { device }
-// for an Android device's screen (its adb serial). A saved pane shape stores it as
-// its leaf: 'pane', { <mux>: name } (e.g. { tmux: 'work' }), { linuxserver: app,
-// name, tag } or { scrcpy: serial }. { webtop: name, tag } is the older form for a
+// session, { app, instance, tag } for a linuxserver app (e.g. chromium 0), { device,
+// display } for an Android device (its adb serial): its screen, or with display a
+// new virtual display on it (see scrcpy.validDisplay). A saved pane shape stores it
+// as its leaf: 'pane', { <mux>: name } (e.g. { tmux: 'work' }), { linuxserver: app,
+// name, tag } or { scrcpy: serial, display }. { webtop: name, tag } is the older form for a
 // webtop.
 const leafSource = (s) => {
-  if (scrcpy.validSerial(s?.scrcpy)) return { device: s.scrcpy };
+  if (scrcpy.validSerial(s?.scrcpy)) return { device: s.scrcpy, display: scrcpy.validDisplay(s.display) ? s.display : null };
   const app = s?.linuxserver ?? (s?.webtop !== undefined ? 'webtop' : undefined);
   const instance = s?.linuxserver ? s.name : s?.webtop;
   if (ls.validApp(app) && ls.validName(instance)) return { app, instance, tag: ls.validTag(s.tag) ? s.tag : 'latest' };
@@ -35,9 +36,9 @@ const leafSource = (s) => {
 };
 const isLeaf = (s) => s === 'pane' || leafSource(s) !== null;
 const paneLeaf = (p) =>
-  p.device ? { scrcpy: p.device } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
+  p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
 const sameSource = (p, source) =>
-  (p.device ?? null) === (source?.device ?? null) &&
+  (p.device ?? null) === (source?.device ?? null) && (p.display ?? null) === (source?.display ?? null) &&
   p.app === (source?.app ?? null) && p.instance === (source?.instance ?? null) &&
   p.mux === (source?.mux ?? null) && p.session === (source?.name ?? null);
 
@@ -52,8 +53,10 @@ class WindowManager extends EventEmitter {
     //     mux and session name the session it is attached to (see mux.js), or are null.
     //   kind 'web': { app, instance, tag, url, error } shows a linuxserver app, e.g.
     //     webtop or chromium (see linuxserver.js); url is null until it answers.
-    //   kind 'scrcpy': { device, model, mirror, status, video, config } shows an
-    //     Android device's screen (see scrcpy.js); the window decodes the stream.
+    //   kind 'scrcpy': { device, display, model, mirror, status, video, fitSize } shows
+    //     an Android device's screen or a new display on it (see scrcpy.js); the
+    //     window decodes the stream. fitSize is the pane's size in pixels, which a
+    //     flex display ('fit') follows.
     this.terminals = new Map();
     this.saveTimer = null;
     this.planner = null; // the layout planner window, while open
@@ -139,6 +142,14 @@ class WindowManager extends EventEmitter {
       } catch (err) {
         console.warn('scrcpy:input:', err.message);
       }
+    });
+    // A flex display's pane changed size: resize the display to match.
+    ipcMain.on('scrcpy:resize', (event, paneId, width, height) => {
+      const pane = this.#pane(event, paneId);
+      if (pane?.kind !== 'scrcpy' || !scrcpy.isFit(pane.display)) return;
+      if (!(Number.isInteger(width) && Number.isInteger(height) && width >= 64 && height >= 64)) return;
+      pane.fitSize = { width: Math.min(width, 0xffff), height: Math.min(height, 0xffff) };
+      pane.mirror?.send({ type: 'resizeDisplay', ...pane.fitSize });
     });
     ipcMain.on('pane:focus', (event, paneId) => {
       const term = this.#fromSender(event);
@@ -239,7 +250,7 @@ class WindowManager extends EventEmitter {
   #paneList(term) {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
-      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, device: p.device ?? null, model: p.model ?? null, pid: p.pty?.pid ?? null };
+      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, device: p.device ?? null, display: p.display ?? null, model: p.model ?? null, pid: p.pty?.pid ?? null };
     });
   }
 
@@ -251,12 +262,20 @@ class WindowManager extends EventEmitter {
       muxes: [...this.muxes.keys()].map((m) => ({ id: m, sessions: [...(this.sessions.get(m)?.keys() ?? [])] })),
       // Pulled linuxserver app images and the app's containers, or null without docker.
       linuxserver: this.docker ? this.apps : null,
-      // Connected Android devices, or null without adb.
-      android: this.adb ? this.devices : null,
+      // Connected Android devices and the new displays the menu offers on each, or
+      // null without adb.
+      android: this.adb ? { devices: this.devices, displays: this.#displayChoices() } : null,
       windows: [...this.terminals.values()]
         .filter((t) => !t.closed && !t.win.isDestroyed())
         .map((t) => ({ id: t.id, focused: t.win.isFocused(), locked: t.locked, layout: t.layout, active: t.activePane, panes: this.#paneList(t) })),
     };
+  }
+
+  // A new display at the main screen's size, one that fits its pane, and the sizes
+  // from the config's scrcpyDisplays.
+  #displayChoices() {
+    const extra = Array.isArray(this.config.scrcpyDisplays) ? this.config.scrcpyDisplays : [];
+    return [...new Set(['', 'fit', ...extra.filter(scrcpy.validDisplay)])];
   }
 
   #sendLayout(term) {
@@ -265,7 +284,7 @@ class WindowManager extends EventEmitter {
     const panes = {};
     for (const p of term.panes.values()) {
       if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: `${p.app} ${p.instance} (${p.tag})` };
-      if (p.kind === 'scrcpy') panes[p.id] = { kind: 'scrcpy', status: p.status };
+      if (p.kind === 'scrcpy') panes[p.id] = { kind: 'scrcpy', status: p.status, fit: scrcpy.isFit(p.display) };
     }
     term.win.webContents.send('layout', { layout: term.layout, active: term.activePane, panes });
   }
@@ -354,13 +373,15 @@ class WindowManager extends EventEmitter {
     return id;
   }
 
-  // A device pane mirrors the device's screen for as long as the pane exists. When
+  // A device pane mirrors the device's screen, or shows a new display on it, for as
+  // long as the pane exists. A new display and the apps on it go away with the
+  // pane, unless scrcpyKeepApps moves the apps to the main screen. When
   // the device is not connected, or the stream stops (a cable pulled, the server
   // killed), the pane says so and tries again every few seconds.
-  #spawnScrcpyPane(term, { device }) {
+  #spawnScrcpyPane(term, { device, display = null }) {
     const id = crypto.randomUUID();
     const model = this.devices.find((d) => d.serial === device)?.model ?? device;
-    const pane = { id, kind: 'scrcpy', device, model, mirror: null, retry: null, status: `Connecting to ${model}…`, video: null, ready: false, mux: null, session: null, app: null, instance: null, title: model, process: 'scrcpy', exited: false };
+    const pane = { id, kind: 'scrcpy', device, display, fitSize: null, model, mirror: null, retry: null, status: `Connecting to ${model}…`, video: null, ready: false, mux: null, session: null, app: null, instance: null, title: model, process: 'scrcpy', exited: false };
     term.panes.set(id, pane);
     const send = (channel, ...args) => {
       if (pane.ready && !term.win.isDestroyed()) term.win.webContents.send(channel, id, ...args);
@@ -386,13 +407,23 @@ class WindowManager extends EventEmitter {
       await this.refreshSessions();
       if (pane.exited) return;
       if (!this.devices.some((d) => d.serial === device)) return retry(`Waiting for ${pane.model === device ? device : `${pane.model} (${device})`}…`);
-      const mirror = new scrcpy.Mirror({ adb: this.adb, ...this.scrcpyTools }, device);
+      const mirror = new scrcpy.Mirror({ adb: this.adb, ...this.scrcpyTools }, device, {
+        display,
+        fitSize: pane.fitSize,
+        keepApps: this.config.scrcpyKeepApps,
+        imePolicy: this.config.scrcpyImePolicy,
+      });
       pane.mirror = mirror;
       mirror.on('name', (name) => {
         pane.model = pane.title = name;
         this.#changed();
       });
       mirror.on('session', (video) => {
+        // The pane may have changed size while the server started.
+        const fit = pane.fitSize;
+        if (!pane.video && fit && scrcpy.isFit(display) && (fit.width !== video.width || fit.height !== video.height)) {
+          mirror.send({ type: 'resizeDisplay', ...fit });
+        }
         pane.video = video;
         send('scrcpy:session', video);
         setStatus(null);
@@ -445,19 +476,26 @@ class WindowManager extends EventEmitter {
 
   // A planner menu choice: 'shell', '<mux>:new', '<mux>:<name>' (e.g. 'tmux:work'),
   // 'ls:new:<app>:<tag>' (e.g. 'ls:new:chromium:latest'), 'ls:<app>:<instance>' or
-  // 'scrcpy:<adb serial>'.
+  // 'scrcpy:<adb serial>' or 'scrcpy-display:<display>:<adb serial>' (a new display,
+  // see scrcpy.validDisplay).
   // Returns a source (see leafSource). A new session or app instance gets the smallest
   // free number, like `ptmux new` and `tmux new`
   // without a name, skipping names that panes already use.
   async #resolveSource(source) {
     if (source === 'shell') return null;
     if (typeof source === 'string' && source.startsWith('ls:')) return this.#resolveApp(source.slice(3).split(':'));
-    if (typeof source === 'string' && source.startsWith('scrcpy:')) {
-      // Serials of devices on the network contain ':' themselves.
-      const device = source.slice('scrcpy:'.length);
+    if (typeof source === 'string' && /^scrcpy(-display)?:/.test(source)) {
+      // Serials of devices on the network contain ':' themselves; displays do not.
+      let rest = source.slice(source.indexOf(':') + 1);
+      let display = null;
+      if (source.startsWith('scrcpy-display:')) {
+        display = rest.slice(0, rest.indexOf(':'));
+        rest = rest.slice(display.length + 1);
+        if (!scrcpy.validDisplay(display)) throw new Error('bad display size');
+      }
       if (!this.adb) throw new Error('adb is not installed');
-      if (!scrcpy.validSerial(device)) throw new Error('bad adb serial');
-      return { device };
+      if (!scrcpy.validSerial(rest)) throw new Error('bad adb serial');
+      return { device: rest, display };
     }
     const [, m, name] = (typeof source === 'string' && source.match(/^([a-z]+):(.*)$/)) || [];
     if (!mux.MUXES[m]) throw new Error('unknown pane source');
@@ -623,6 +661,7 @@ class WindowManager extends EventEmitter {
           app: active?.app ?? null,
           instance: active?.instance ?? null,
           device: active?.device ?? null,
+          display: active?.display ?? null,
           x: b.x,
           y: b.y,
           width: b.width,

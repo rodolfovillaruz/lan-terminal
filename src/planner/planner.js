@@ -192,16 +192,37 @@ function dropZone(el, e) {
 
 // A pane's program: "tmux work", "ptmux 2", "chromium 0", "Pixel 8", "bash", "vim".
 function paneName(info) {
-  if (info.device) return info.model ?? info.device;
+  if (info.device) return `${info.model ?? info.device}${info.display === null ? '' : ` · ${displayLabel(info.display)}`}`;
   if (info.app) return `${info.app} ${info.instance}`;
   return info.session ? `${info.mux} ${info.session}` : info.process;
 }
 
 // The pane's menu value (see sourceMenu).
 function paneSource(info) {
-  if (info.device) return `scrcpy:${info.device}`;
+  if (info.device) return deviceSource(info.device, info.display);
   if (info.app) return `ls:${info.app}:${info.instance}`;
   return info.session ? `${info.mux}:${info.session}` : 'shell';
+}
+
+// A device's screen ('scrcpy:<serial>'), or a new display on it (see displayLabel).
+function deviceSource(serial, display) {
+  return display === null ? `scrcpy:${serial}` : `scrcpy-display:${display}:${serial}`;
+}
+
+// deviceSource's value back as { serial, display }. Serials can contain ':', and
+// displays cannot.
+function parseDeviceSource(value) {
+  const rest = value.slice(value.indexOf(':') + 1);
+  if (!value.startsWith('scrcpy-display:')) return { serial: rest, display: null };
+  const cut = rest.indexOf(':');
+  return { serial: rest.slice(cut + 1), display: rest.slice(0, cut) };
+}
+
+// A new display, as scrcpy's --new-display takes it ('', '1920x1080', '/240',
+// '1920x1080/240'), or 'fit' / 'fit/<dpi>' for one that keeps fitting its pane.
+function displayLabel(display) {
+  if (display.startsWith('fit')) return `new display fitting the pane${display.length > 3 ? ` (${display.slice(4)} dpi)` : ''}`;
+  return `new display${display ? ` ${display}` : ''}`;
 }
 
 // What a pane shows, as one line: "tmux work — vim notes.md", "bash", "vim — notes.md".
@@ -299,14 +320,25 @@ function fillSourceMenu(select, current, st) {
     }
     if (group.children.length) select.appendChild(group);
   }
+  // Per device: its screen, and the new displays the config offers.
   if (st.android) {
-    const group = document.createElement('optgroup');
-    group.label = 'Android (scrcpy)';
-    const devices = new Map(st.android.map((d) => [`scrcpy:${d.serial}`, d.model]));
-    // The pane's own device, even while it is disconnected.
-    if (current?.startsWith('scrcpy:') && !devices.has(current)) devices.set(current, `${current.slice(7)} (not connected)`);
-    for (const [value, model] of devices) option(group, value, model);
-    if (group.children.length) select.appendChild(group);
+    const capitalize = (text) => text[0].toUpperCase() + text.slice(1);
+    for (const { serial, model } of st.android.devices) {
+      const group = document.createElement('optgroup');
+      group.label = `${model} (scrcpy)`;
+      option(group, deviceSource(serial, null), 'Screen');
+      for (const display of st.android.displays) option(group, deviceSource(serial, display), capitalize(displayLabel(display)));
+      select.appendChild(group);
+    }
+    // The pane's own device, even while it is disconnected, or its display when the
+    // config no longer offers it.
+    if (current?.startsWith('scrcpy') && ![...select.options].some((o) => o.value === current)) {
+      const group = document.createElement('optgroup');
+      group.label = 'Android (scrcpy)';
+      const { serial, display } = parseDeviceSource(current);
+      option(group, current, `${serial}${display === null ? '' : ` · ${displayLabel(display)}`}`);
+      select.appendChild(group);
+    }
   }
   select.value = current ?? '';
 }
@@ -338,7 +370,9 @@ function paneBox(win, id) {
     }, 'close');
   }
   // Only a locked window may lose its last pane; any other window would close.
-  button(tools, '✕', info.app ? `Close pane (${info.app} keeps running)` : info.session ? 'Close pane (the session keeps running)' : 'Close pane', () => window.planner.close(win.id, id), 'close').disabled =
+  const closeTip = info.app ? `Close pane (${info.app} keeps running)` : info.session ? 'Close pane (the session keeps running)'
+    : info.device && info.display !== null ? 'Close pane and its new display' : 'Close pane';
+  button(tools, '✕', closeTip, () => window.planner.close(win.id, id), 'close').disabled =
     win.panes.length === 1 && !win.locked;
 
   el.append(zone, tools, proc, source);

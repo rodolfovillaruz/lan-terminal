@@ -20,6 +20,9 @@ const DEFAULTS = {
   // For Android device panes; null = find on $PATH (adb also in the Android SDK).
   adb: null,
   scrcpy: null,
+  scrcpyDisplays: [], // more new-display sizes for the pane menu, e.g. "1920x1080/240"
+  scrcpyKeepApps: false, // closing a new display moves its apps to the main screen
+  scrcpyImePolicy: null, // where a new display's keyboard shows: "local", "fallback", "hide"
   fontSize: 16,
   width: null, // null = primary display width
   height: null, // null = primary display height

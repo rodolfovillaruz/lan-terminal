@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('terminal', {
   // Android device panes: the video stream in, touch and key events out.
   scrcpyReady: (paneId) => ipcRenderer.send('scrcpy:ready', paneId),
   scrcpyInput: (paneId, msg) => ipcRenderer.send('scrcpy:input', paneId, msg),
+  scrcpyResize: (paneId, width, height) => ipcRenderer.send('scrcpy:resize', paneId, width, height),
   onScrcpySession: (cb) => ipcRenderer.on('scrcpy:session', (_e, paneId, video) => cb(paneId, video)),
   onScrcpyPacket: (cb) => ipcRenderer.on('scrcpy:packet', (_e, paneId, packet) => cb(paneId, packet)),
   onData: (cb) => ipcRenderer.on('pty:data', (_e, paneId, data) => cb(paneId, data)),

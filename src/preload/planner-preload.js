@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld('planner', {
   resize: (windowId, path, sizes) => ipcRenderer.send('planner:resize', windowId, path, sizes),
   select: (windowId, paneId) => ipcRenderer.send('planner:select', windowId, paneId),
   // source: 'shell', '<mux>:new', '<mux>:<session>', 'ls:new:<app>:<tag>', 'ls:<app>:<instance>'
-  // or 'scrcpy:<adb serial>'
+  // 'scrcpy:<adb serial>' or 'scrcpy-display:<display>:<adb serial>'
   setSource: (windowId, paneId, source) => ipcRenderer.send('planner:source', windowId, paneId, source),
   addPane: (windowId, source) => ipcRenderer.send('planner:add-pane', windowId, source),
   stopApp: (app, instance) => ipcRenderer.send('planner:stop-app', app, instance),

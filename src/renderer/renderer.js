@@ -241,7 +241,20 @@ async function main() {
     }
     canvas.addEventListener('focus', onFocus(id));
 
+    // A flex display follows the pane's size, in device pixels.
+    let fit = false;
+    const syncSize = () => {
+      if (!fit || !el.isConnected || el.clientWidth === 0) return;
+      const ratio = window.devicePixelRatio || 1;
+      window.terminal.scrcpyResize(id, Math.round(el.clientWidth * ratio), Math.round(el.clientHeight * ratio));
+    };
+    new ResizeObserver(syncSize).observe(el);
+
     const update = (next) => {
+      if (next.fit && !fit) {
+        fit = true;
+        syncSize();
+      }
       status.textContent = next.status ?? '';
       status.hidden = !next.status;
       canvas.hidden = Boolean(next.status);
@@ -257,7 +270,7 @@ async function main() {
       update,
       session: (v) => { video = v; },
       packet: onPacket,
-      syncSize: () => {},
+      syncSize,
       focus: () => canvas.focus(),
       dispose: closeDecoder,
     };
