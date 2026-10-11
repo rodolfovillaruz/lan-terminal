@@ -148,6 +148,11 @@ class WindowManager extends EventEmitter {
 
     // Planner window -> windows and the panes inside them.
     ipcMain.handle('planner:state', () => this.#plannerState());
+    // A pane menu is opening: list sessions, webtops and pulled image tags now.
+    ipcMain.handle('planner:refresh', async (event) => {
+      if (this.#plannerOpen() && event.sender === this.planner.webContents) await this.refreshSessions();
+      return this.#plannerState();
+    });
     const plannerAction = (channel, fn) =>
       ipcMain.on(channel, async (event, ...args) => {
         if (!this.#plannerOpen() || event.sender !== this.planner.webContents) return;

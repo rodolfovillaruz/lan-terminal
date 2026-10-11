@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 // One planner shows every capture window; window ids pick which window an edit is for.
 contextBridge.exposeInMainWorld('planner', {
   getState: () => ipcRenderer.invoke('planner:state'),
+  refresh: () => ipcRenderer.invoke('planner:refresh'),
   onState: (cb) => ipcRenderer.on('planner:state', (_e, state) => cb(state)),
   split: (windowId, paneId, dir) => ipcRenderer.send('planner:split', windowId, paneId, dir),
   close: (windowId, paneId) => ipcRenderer.send('planner:close', windowId, paneId),

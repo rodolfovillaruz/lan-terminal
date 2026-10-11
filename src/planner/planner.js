@@ -213,41 +213,41 @@ function paneLabel(info) {
 // container or a new one from a pulled image tag). current is the pane's choice
 // ('shell', '<mux>:<name>' or 'webtop:<name>'), or null for a placeholder (an empty
 // window).
-// While the menu has focus, redraws wait, or the open menu would vanish.
+// While the menu has focus, redraws wait, or the open menu would vanish. Opening it
+// first fetches the sessions, webtops and pulled image tags, so a tag pulled a moment
+// ago is already there.
 function sourceMenu(current, onChoose) {
   const select = document.createElement('select');
   select.className = 'source';
   select.title = 'What this pane shows. A session or webtop keeps running when the pane closes or switches.';
-  const option = (parent, value, label) => {
-    const o = document.createElement('option');
-    o.value = value;
-    o.textContent = label;
-    parent.appendChild(o);
-    return o;
+  fillSourceMenu(select, current, state);
+
+  // Fresh options, without a redraw, which would close the menu.
+  const refresh = async () => {
+    const fresh = await window.planner.refresh();
+    pending = fresh;
+    fillSourceMenu(select, current, fresh);
   };
-  if (current === null) option(select, '', 'Open…').disabled = true;
-  option(select, 'shell', 'Shell');
-  for (const mux of state.muxes) {
-    const group = document.createElement('optgroup');
-    group.label = `${mux.id} sessions`;
-    const names = new Set(mux.sessions);
-    // The pane's own session, even if the last listing has not seen it yet.
-    if (current?.startsWith(`${mux.id}:`)) names.add(current.slice(mux.id.length + 1));
-    for (const name of names) option(group, `${mux.id}:${name}`, name);
-    option(group, `${mux.id}:new`, `New ${mux.id} session`);
-    select.appendChild(group);
-  }
-  if (state.webtop) {
-    const group = document.createElement('optgroup');
-    group.label = 'webtops';
-    const containers = new Map(state.webtop.containers.map((c) => [c.name, c]));
-    if (current?.startsWith('webtop:') && !containers.has(current.slice(7))) containers.set(current.slice(7), { running: true });
-    for (const [name, c] of containers) option(group, `webtop:${name}`, c.running ? name : `${name} (stopped)`);
-    for (const tag of state.webtop.images) option(group, `webtop:new:${tag}`, `New webtop (${tag})`);
-    if (group.children.length) select.appendChild(group);
-  }
-  select.value = current ?? '';
-  select.addEventListener('focus', () => { choosing = true; });
+  // A click opens the menu only once the fresh options are in. Fetching takes a few
+  // tens of milliseconds, well inside the click's activation that showPicker needs.
+  let opening = false;
+  select.addEventListener('mousedown', async (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    opening = true;
+    select.focus();
+    try {
+      await refresh();
+    } finally {
+      opening = false;
+    }
+    if (document.activeElement === select) select.showPicker();
+  });
+  select.addEventListener('focus', () => {
+    choosing = true;
+    // Reached with the keyboard: fetch before arrow keys or Space open it.
+    if (!opening) refresh();
+  });
   select.addEventListener('blur', () => {
     choosing = false;
     flush();
@@ -257,6 +257,39 @@ function sourceMenu(current, onChoose) {
     select.blur();
   });
   return select;
+}
+
+function fillSourceMenu(select, current, st) {
+  const option = (parent, value, label) => {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    parent.appendChild(o);
+    return o;
+  };
+  select.replaceChildren();
+  if (current === null) option(select, '', 'Open…').disabled = true;
+  option(select, 'shell', 'Shell');
+  for (const mux of st.muxes) {
+    const group = document.createElement('optgroup');
+    group.label = `${mux.id} sessions`;
+    const names = new Set(mux.sessions);
+    // The pane's own session, even if the last listing has not seen it yet.
+    if (current?.startsWith(`${mux.id}:`)) names.add(current.slice(mux.id.length + 1));
+    for (const name of names) option(group, `${mux.id}:${name}`, name);
+    option(group, `${mux.id}:new`, `New ${mux.id} session`);
+    select.appendChild(group);
+  }
+  if (st.webtop) {
+    const group = document.createElement('optgroup');
+    group.label = 'webtops';
+    const containers = new Map(st.webtop.containers.map((c) => [c.name, c]));
+    if (current?.startsWith('webtop:') && !containers.has(current.slice(7))) containers.set(current.slice(7), { running: true });
+    for (const [name, c] of containers) option(group, `webtop:${name}`, c.running ? name : `${name} (stopped)`);
+    for (const tag of st.webtop.images) option(group, `webtop:new:${tag}`, `New webtop (${tag})`);
+    if (group.children.length) select.appendChild(group);
+  }
+  select.value = current ?? '';
 }
 
 function paneBox(win, id) {
