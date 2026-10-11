@@ -150,7 +150,6 @@ main {
 .pane[data-drop='top'] .zone { bottom: 50%; }
 .pane[data-drop='bottom'] .zone { top: 50%; }
 
-.pane .num { font: 600 22px 'JetBrainsMono NL NFM', monospace; }
 .pane .proc {
   max-width: 90%;
   color: var(--muted);

@@ -236,15 +236,11 @@ function sourceMenu(current, onChoose) {
 }
 
 function paneBox(win, id) {
-  const order = win.panes.findIndex((p) => p.id === id);
-  const info = win.panes[order];
+  const info = win.panes.find((p) => p.id === id);
   const el = document.createElement('div');
   el.className = 'pane';
   el.classList.toggle('active', id === win.active);
 
-  const num = document.createElement('div');
-  num.className = 'num';
-  num.textContent = order + 1;
   const proc = document.createElement('div');
   proc.className = 'proc';
   proc.textContent = paneLabel(info);
@@ -261,7 +257,7 @@ function paneBox(win, id) {
   button(tools, '✕', info.session ? 'Close pane (the session keeps running)' : 'Close pane', () => window.planner.close(win.id, id), 'close').disabled =
     win.panes.length === 1 && !win.locked;
 
-  el.append(zone, tools, num, proc, source);
+  el.append(zone, tools, proc, source);
   el.dataset.windowId = win.id;
   el.dataset.paneId = id;
   startDrag(el, win.id, id, proc.textContent);

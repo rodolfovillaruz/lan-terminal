@@ -267,7 +267,9 @@ class WindowManager extends EventEmitter {
     delete env.PTMUX;
     const proc = pty.spawn(file, args, { name: 'xterm-256color', cols: 80, rows: 24, cwd: os.homedir(), env });
     const name = path.basename(file);
-    const pane = { id, pty: proc, session, title: session ?? name, process: name, ready: false, pending: '', exited: false };
+    // The title starts as the program's name, which labels hide, until the program
+    // sets its own.
+    const pane = { id, pty: proc, session, title: name, process: name, ready: false, pending: '', exited: false };
     term.panes.set(id, pane);
     if (session && !this.sessions.includes(session)) setTimeout(() => this.refreshSessions(), 500);
 
