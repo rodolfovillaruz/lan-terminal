@@ -10,10 +10,10 @@ contextBridge.exposeInMainWorld('planner', {
   move: (windowId, paneId, targetId, zone) => ipcRenderer.send('planner:move', windowId, paneId, targetId, zone),
   resize: (windowId, path, sizes) => ipcRenderer.send('planner:resize', windowId, path, sizes),
   select: (windowId, paneId) => ipcRenderer.send('planner:select', windowId, paneId),
-  // source: 'shell', '<mux>:new', '<mux>:<session>', 'webtop:new:<tag>' or 'webtop:<name>'
+  // source: 'shell', '<mux>:new', '<mux>:<session>', 'ls:new:<app>:<tag>' or 'ls:<app>:<instance>'
   setSource: (windowId, paneId, source) => ipcRenderer.send('planner:source', windowId, paneId, source),
   addPane: (windowId, source) => ipcRenderer.send('planner:add-pane', windowId, source),
-  stopWebtop: (name) => ipcRenderer.send('planner:stop-webtop', name),
+  stopApp: (app, instance) => ipcRenderer.send('planner:stop-app', app, instance),
   newWindow: () => ipcRenderer.send('planner:new-window'),
   lockWindow: (windowId, locked) => ipcRenderer.send('planner:lock-window', windowId, locked),
   closeWindow: (windowId) => ipcRenderer.send('planner:close-window', windowId),

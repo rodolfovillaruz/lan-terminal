@@ -7,7 +7,7 @@ const pty = require('node-pty');
 const { save: saveConfig } = require('./config');
 const layout = require('./layout');
 const mux = require('./mux');
-const webtop = require('./webtop');
+const ls = require('./linuxserver');
 
 // Where a dragged pane lands relative to the pane it is dropped on.
 const ZONES = {
@@ -19,17 +19,23 @@ const ZONES = {
 };
 
 // What a pane shows, as a source: null for a shell, { mux, name } for a multiplexer
-// session, { webtop, tag } for a webtop. A saved pane shape stores it as its leaf:
-// 'pane', { <mux>: name } (e.g. { tmux: 'work' }), or { webtop: name, tag }.
+// session, { app, instance, tag } for a linuxserver app (e.g. chromium 0). A saved
+// pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g. { tmux: 'work' }),
+// or { linuxserver: app, name, tag }. { webtop: name, tag } is the older form for a
+// webtop.
 const leafSource = (s) => {
-  if (webtop.validName(s?.webtop)) return { webtop: s.webtop, tag: webtop.validTag(s.tag) ? s.tag : 'latest' };
+  const app = s?.linuxserver ?? (s?.webtop !== undefined ? 'webtop' : undefined);
+  const instance = s?.linuxserver ? s.name : s?.webtop;
+  if (ls.validApp(app) && ls.validName(instance)) return { app, instance, tag: ls.validTag(s.tag) ? s.tag : 'latest' };
   const found = mux.NAMES.filter((m) => mux.validSession(s?.[m]));
   return found.length === 1 ? { mux: found[0], name: s[found[0]] } : null;
 };
 const isLeaf = (s) => s === 'pane' || leafSource(s) !== null;
-const paneLeaf = (p) => (p.webtop ? { webtop: p.webtop, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane');
+const paneLeaf = (p) =>
+  p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
 const sameSource = (p, source) =>
-  (p.webtop ?? null) === (source?.webtop ?? null) && p.mux === (source?.mux ?? null) && p.session === (source?.name ?? null);
+  p.app === (source?.app ?? null) && p.instance === (source?.instance ?? null) &&
+  p.mux === (source?.mux ?? null) && p.session === (source?.name ?? null);
 
 class WindowManager extends EventEmitter {
   constructor(config) {
@@ -37,11 +43,11 @@ class WindowManager extends EventEmitter {
     this.config = config;
     // id (UUID) -> { id, win, panes, layout, activePane, locked, moveMode, alwaysOnTop, ready }
     // layout is null for a window with no panes, which only a locked window can be.
-    // panes: paneId -> { id, kind, title, process, mux, session, webtop, ... }
+    // panes: paneId -> { id, kind, title, process, mux, session, app, instance, ... }
     //   kind 'term': { pty, ready, pending, exited } runs a shell or a multiplexer client;
     //     mux and session name the session it is attached to (see mux.js), or are null.
-    //   kind 'web': { webtop, tag, url, error } shows a webtop's desktop (see webtop.js);
-    //     url is null until the container answers.
+    //   kind 'web': { app, instance, tag, url, error } shows a linuxserver app, e.g.
+    //     webtop or chromium (see linuxserver.js); url is null until it answers.
     this.terminals = new Map();
     this.saveTimer = null;
     this.planner = null; // the layout planner window, while open
@@ -49,7 +55,7 @@ class WindowManager extends EventEmitter {
     this.muxes = new Map(mux.NAMES.map((m) => [m, mux.find(m, config[m])]).filter(([, bin]) => bin));
     this.sessions = new Map(); // mux -> Map(session name -> target), as last listed
     this.docker = mux.find('docker', config.docker);
-    this.webtops = { images: [], containers: new Map() }; // as last listed (webtop.js)
+    this.apps = { images: [], containers: [] }; // linuxserver apps as last listed
     this.quitting = false;
     app.on('before-quit', () => { this.quitting = true; });
     // systemd stops the service with SIGTERM. Quit through the app so the locked
@@ -148,7 +154,7 @@ class WindowManager extends EventEmitter {
 
     // Planner window -> windows and the panes inside them.
     ipcMain.handle('planner:state', () => this.#plannerState());
-    // A pane menu is opening: list sessions, webtops and pulled image tags now.
+    // A pane menu is opening: list sessions, linuxserver apps and pulled images now.
     ipcMain.handle('planner:refresh', async (event) => {
       if (this.#plannerOpen() && event.sender === this.planner.webContents) await this.refreshSessions();
       return this.#plannerState();
@@ -169,7 +175,7 @@ class WindowManager extends EventEmitter {
     plannerAction('planner:select', (id, paneId) => this.selectPane(id, paneId));
     plannerAction('planner:source', (id, paneId, source) => this.setPaneSource(id, paneId, source));
     plannerAction('planner:add-pane', (id, source) => this.addPane(id, source));
-    plannerAction('planner:stop-webtop', (name) => this.stopWebtop(name));
+    plannerAction('planner:stop-app', (app, instance) => this.stopApp(app, instance));
     plannerAction('planner:new-window', () => this.create());
     plannerAction('planner:close-window', (id) => this.terminals.size > 1 && this.close(id));
     plannerAction('planner:lock-window', (id, locked) => this.setLocked(id, locked));
@@ -206,7 +212,7 @@ class WindowManager extends EventEmitter {
   #paneList(term) {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
-      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, webtop: p.webtop, pid: p.pty?.pid ?? null };
+      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, pid: p.pty?.pid ?? null };
     });
   }
 
@@ -216,10 +222,8 @@ class WindowManager extends EventEmitter {
       aspect: width / height,
       // Each installed multiplexer and its running sessions, for the pane menus.
       muxes: [...this.muxes.keys()].map((m) => ({ id: m, sessions: [...(this.sessions.get(m)?.keys() ?? [])] })),
-      // Pulled webtop image tags and the app's webtop containers, or null without docker.
-      webtop: this.docker
-        ? { images: this.webtops.images, containers: [...this.webtops.containers].map(([name, c]) => ({ name, ...c })) }
-        : null,
+      // Pulled linuxserver app images and the app's containers, or null without docker.
+      linuxserver: this.docker ? this.apps : null,
       windows: [...this.terminals.values()]
         .filter((t) => !t.closed && !t.win.isDestroyed())
         .map((t) => ({ id: t.id, focused: t.win.isFocused(), locked: t.locked, layout: t.layout, active: t.activePane, panes: this.#paneList(t) })),
@@ -231,7 +235,7 @@ class WindowManager extends EventEmitter {
     // Web panes have no pty to describe them, so the renderer gets what to show.
     const panes = {};
     for (const p of term.panes.values()) {
-      if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: `webtop ${p.webtop} (${p.tag})` };
+      if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: `${p.app} ${p.instance} (${p.tag})` };
     }
     term.win.webContents.send('layout', { layout: term.layout, active: term.activePane, panes });
   }
@@ -279,7 +283,7 @@ class WindowManager extends EventEmitter {
     const name = path.basename(file);
     // The title starts as the program's name, which labels hide, until the program
     // sets its own.
-    const pane = { id, kind: 'term', pty: proc, mux: session?.mux ?? null, session: session?.name ?? null, webtop: null, title: name, process: name, ready: false, pending: '', exited: false };
+    const pane = { id, kind: 'term', pty: proc, mux: session?.mux ?? null, session: session?.name ?? null, app: null, instance: null, title: name, process: name, ready: false, pending: '', exited: false };
     term.panes.set(id, pane);
     if (session && !target) setTimeout(() => this.refreshSessions(), 500);
 
@@ -295,22 +299,22 @@ class WindowManager extends EventEmitter {
     return id;
   }
 
-  // A webtop pane shows a placeholder while the container starts (or is reused), then
-  // its desktop. Closing the pane leaves the container running.
-  #spawnWebPane(term, name, tag) {
+  // An app pane shows a placeholder while the container starts (or is reused), then
+  // the app's UI. Closing the pane leaves the container running.
+  #spawnWebPane(term, { app, instance, tag }) {
     const id = crypto.randomUUID();
-    const pane = { id, kind: 'web', webtop: name, tag, url: null, error: null, mux: null, session: null, title: 'webtop', process: 'webtop', exited: false };
+    const pane = { id, kind: 'web', app, instance, tag, url: null, error: null, mux: null, session: null, title: app, process: app, exited: false };
     term.panes.set(id, pane);
     if (!this.docker) {
       pane.error = 'docker is not installed';
       return id;
     }
-    webtop
-      .ensure(this.docker, name, tag)
+    ls
+      .ensure(this.docker, app, instance, tag)
       .then((url) => { pane.url = url; })
       .catch((err) => {
         pane.error = err.message;
-        console.warn(`webtop ${name}:`, err.message);
+        console.warn(`${app} ${instance}:`, err.message);
       })
       .finally(() => {
         if (term.panes.get(id) !== pane) return;
@@ -321,40 +325,40 @@ class WindowManager extends EventEmitter {
   }
 
   #makePane(term, source) {
-    return source?.webtop ? this.#spawnWebPane(term, source.webtop, source.tag) : this.#spawnPane(term, source);
+    return source?.app ? this.#spawnWebPane(term, source) : this.#spawnPane(term, source);
   }
 
   // A shell's pty is killed, and its exit removes the pane. A multiplexer client
-  // only detaches; a webtop's container keeps running.
+  // only detaches; an app's container keeps running.
   #endPane(pane) {
     if (pane.pty) pane.pty.kill();
     pane.exited = true;
   }
 
-  // Lists every installed multiplexer's sessions and the webtops. The planner shows
-  // them in each pane's menu.
+  // Lists every installed multiplexer's sessions and the linuxserver apps. The
+  // planner shows them in each pane's menu.
   async refreshSessions() {
     const [lists, images, containers] = await Promise.all([
       Promise.all([...this.muxes].map(async ([m, bin]) => [m, await mux.list(m, bin)])),
-      this.docker ? webtop.images(this.docker) : [],
-      this.docker ? webtop.list(this.docker) : new Map(),
+      this.docker ? ls.images(this.docker) : [],
+      this.docker ? ls.list(this.docker) : [],
     ]);
-    const next = { sessions: new Map(lists), webtops: { images, containers } };
-    const key = ({ sessions, webtops }) =>
-      JSON.stringify([[...sessions].map(([m, names]) => [m, [...names]]), webtops.images, [...webtops.containers]]);
+    const next = { sessions: new Map(lists), apps: { images, containers } };
+    const key = ({ sessions, apps }) => JSON.stringify([[...sessions].map(([m, names]) => [m, [...names]]), apps]);
     if (key(next) === key(this)) return;
     this.sessions = next.sessions;
-    this.webtops = next.webtops;
+    this.apps = next.apps;
     if (this.#plannerOpen()) this.planner.webContents.send('planner:state', this.#plannerState());
   }
 
   // A planner menu choice: 'shell', '<mux>:new', '<mux>:<name>' (e.g. 'tmux:work'),
-  // 'webtop:new:<tag>' or 'webtop:<name>'. Returns a source (see leafSource). A new
-  // session or webtop gets the smallest free number, like `ptmux new` and `tmux new`
+  // 'ls:new:<app>:<tag>' (e.g. 'ls:new:chromium:latest') or 'ls:<app>:<instance>'.
+  // Returns a source (see leafSource). A new session or app instance gets the smallest
+  // free number, like `ptmux new` and `tmux new`
   // without a name, skipping names that panes already use.
   async #resolveSource(source) {
     if (source === 'shell') return null;
-    if (typeof source === 'string' && source.startsWith('webtop:')) return this.#resolveWebtop(source.slice(7));
+    if (typeof source === 'string' && source.startsWith('ls:')) return this.#resolveApp(source.slice(3).split(':'));
     const [, m, name] = (typeof source === 'string' && source.match(/^([a-z]+):(.*)$/)) || [];
     if (!mux.MUXES[m]) throw new Error('unknown pane source');
     if (!this.muxes.has(m)) throw new Error(`${m} is not installed`);
@@ -368,26 +372,28 @@ class WindowManager extends EventEmitter {
     return { mux: m, name };
   }
 
-  async #resolveWebtop(choice) {
+  async #resolveApp(parts) {
     if (!this.docker) throw new Error('docker is not installed');
     await this.refreshSessions();
-    if (choice.startsWith('new:')) {
-      const tag = choice.slice(4);
-      if (!webtop.validTag(tag)) throw new Error('bad webtop image tag');
-      const taken = new Set(this.webtops.containers.keys());
-      for (const term of this.terminals.values()) for (const p of term.panes.values()) if (p.webtop) taken.add(p.webtop);
-      for (let n = 0; ; n++) if (!taken.has(String(n))) return { webtop: String(n), tag };
+    if (parts[0] === 'new') {
+      const [, app, tag] = parts;
+      if (!ls.validApp(app) || !ls.validTag(tag)) throw new Error('bad linuxserver image');
+      const taken = new Set(this.apps.containers.filter((c) => c.app === app).map((c) => c.name));
+      for (const term of this.terminals.values()) for (const p of term.panes.values()) if (p.app === app) taken.add(p.instance);
+      for (let n = 0; ; n++) if (!taken.has(String(n))) return { app, instance: String(n), tag };
     }
-    if (!webtop.validName(choice)) throw new Error('bad webtop name');
-    return { webtop: choice, tag: this.webtops.containers.get(choice)?.tag ?? 'latest' };
+    const [app, instance] = parts;
+    if (!ls.validApp(app) || !ls.validName(instance)) throw new Error('bad linuxserver app');
+    const tag = this.apps.containers.find((c) => c.app === app && c.name === instance)?.tag ?? 'latest';
+    return { app, instance, tag };
   }
 
-  // Stops a webtop's container and removes the panes that showed it.
-  async stopWebtop(name) {
+  // Stops an app's container and removes the panes that showed it.
+  async stopApp(app, instance) {
     if (!this.docker) throw new Error('docker is not installed');
-    await webtop.stop(this.docker, name);
+    await ls.stop(this.docker, app, instance);
     for (const term of [...this.terminals.values()]) {
-      for (const pane of [...term.panes.values()]) if (pane.webtop === name) this.#removePane(term, pane.id);
+      for (const pane of [...term.panes.values()]) if (pane.app === app && pane.instance === instance) this.#removePane(term, pane.id);
     }
     await this.refreshSessions();
   }
@@ -449,7 +455,7 @@ class WindowManager extends EventEmitter {
     }
 
     // A reload (e.g. renderer crash recovery) needs a fresh handshake. Only the page
-    // itself counts: a webtop's iframe loading must not stop layouts and output.
+    // itself counts: an app pane's iframe loading must not stop layouts and output.
     win.webContents.on('did-start-navigation', (details) => {
       if (!details.isMainFrame || details.isSameDocument) return;
       term.ready = false;
@@ -514,7 +520,8 @@ class WindowManager extends EventEmitter {
           process: active?.process ?? '',
           mux: active?.mux ?? null,
           session: active?.session ?? null,
-          webtop: active?.webtop ?? null,
+          app: active?.app ?? null,
+          instance: active?.instance ?? null,
           x: b.x,
           y: b.y,
           width: b.width,
@@ -553,7 +560,7 @@ class WindowManager extends EventEmitter {
     return true;
   }
 
-  // A shell, multiplexer session or webtop (see #resolveSource) in an empty window.
+  // A shell, multiplexer session or linuxserver app (see #resolveSource) in an empty window.
   async addPane(id, choice = 'shell') {
     const source = await this.#resolveSource(choice);
     const term = this.get(id);
@@ -565,7 +572,7 @@ class WindowManager extends EventEmitter {
   }
 
   // Swaps what a pane shows (see #resolveSource) for a new pane in the same place. A
-  // multiplexer client that goes away leaves its session running, and a webtop keeps
+  // multiplexer client that goes away leaves its session running, and an app keeps
   // its container.
   async setPaneSource(id, paneId, choice) {
     const source = await this.#resolveSource(choice);

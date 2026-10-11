@@ -190,15 +190,15 @@ function dropZone(el, e) {
   return edges.sort((a, b) => a[1] - b[1])[0][0];
 }
 
-// A pane's program: "tmux work", "ptmux 2", "webtop 0", "bash", "vim".
+// A pane's program: "tmux work", "ptmux 2", "chromium 0", "bash", "vim".
 function paneName(info) {
-  if (info.webtop) return `webtop ${info.webtop}`;
+  if (info.app) return `${info.app} ${info.instance}`;
   return info.session ? `${info.mux} ${info.session}` : info.process;
 }
 
 // The pane's menu value (see sourceMenu).
 function paneSource(info) {
-  if (info.webtop) return `webtop:${info.webtop}`;
+  if (info.app) return `ls:${info.app}:${info.instance}`;
   return info.session ? `${info.mux}:${info.session}` : 'shell';
 }
 
@@ -209,17 +209,18 @@ function paneLabel(info) {
 }
 
 // The menu that picks what a pane shows: a shell, for each installed multiplexer
-// (ptmux, tmux, screen) a running session or a new one, or a webtop (an existing
-// container or a new one from a pulled image tag). current is the pane's choice
-// ('shell', '<mux>:<name>' or 'webtop:<name>'), or null for a placeholder (an empty
+// (ptmux, tmux, screen) a running session or a new one, or a linuxserver app such
+// as webtop or chromium (an existing container or a new one from a pulled image).
+// current is the pane's choice ('shell', '<mux>:<name>' or 'ls:<app>:<instance>'),
+// or null for a placeholder (an empty
 // window).
 // While the menu has focus, redraws wait, or the open menu would vanish. Opening it
-// first fetches the sessions, webtops and pulled image tags, so a tag pulled a moment
+// first fetches the sessions, apps and pulled images, so an image pulled a moment
 // ago is already there.
 function sourceMenu(current, onChoose) {
   const select = document.createElement('select');
   select.className = 'source';
-  select.title = 'What this pane shows. A session or webtop keeps running when the pane closes or switches.';
+  select.title = 'What this pane shows. A session or app keeps running when the pane closes or switches.';
   fillSourceMenu(select, current, state);
 
   // Fresh options, without a redraw, which would close the menu.
@@ -280,13 +281,19 @@ function fillSourceMenu(select, current, st) {
     option(group, `${mux.id}:new`, `New ${mux.id} session`);
     select.appendChild(group);
   }
-  if (st.webtop) {
+  if (st.linuxserver) {
     const group = document.createElement('optgroup');
-    group.label = 'webtops';
-    const containers = new Map(st.webtop.containers.map((c) => [c.name, c]));
-    if (current?.startsWith('webtop:') && !containers.has(current.slice(7))) containers.set(current.slice(7), { running: true });
-    for (const [name, c] of containers) option(group, `webtop:${name}`, c.running ? name : `${name} (stopped)`);
-    for (const tag of st.webtop.images) option(group, `webtop:new:${tag}`, `New webtop (${tag})`);
+    group.label = 'linuxserver';
+    const running = new Map(st.linuxserver.containers.map((c) => [`ls:${c.app}:${c.name}`, c]));
+    // The pane's own app, even if the last listing has not seen it yet.
+    if (current?.startsWith('ls:') && !running.has(current)) {
+      const [, app, name] = current.split(':');
+      running.set(current, { app, name, running: true });
+    }
+    for (const [value, c] of running) option(group, value, `${c.app} ${c.name}${c.running ? '' : ' (stopped)'}`);
+    for (const { app, tag } of st.linuxserver.images) {
+      option(group, `ls:new:${app}:${tag}`, tag === 'latest' ? `New ${app}` : `New ${app} (${tag})`);
+    }
     if (group.children.length) select.appendChild(group);
   }
   select.value = current ?? '';
@@ -310,15 +317,16 @@ function paneBox(win, id) {
   tools.className = 'tools';
   button(tools, '◫', 'Split pane right', () => window.planner.split(win.id, id, 'row'));
   button(tools, '⊟', 'Split pane down', () => window.planner.split(win.id, id, 'col'));
-  if (info.webtop) {
-    button(tools, '■', `Stop webtop ${info.webtop} (its files stay in its volume)`, () => {
-      if (confirm(`Stop webtop ${info.webtop}? Programs running in its desktop are closed; files in its home stay.`)) {
-        window.planner.stopWebtop(info.webtop);
+  if (info.app) {
+    const name = paneName(info);
+    button(tools, '■', `Stop ${name} (its files stay in its volume)`, () => {
+      if (confirm(`Stop ${name}? Programs running in it are closed; files in its home stay.`)) {
+        window.planner.stopApp(info.app, info.instance);
       }
     }, 'close');
   }
   // Only a locked window may lose its last pane; any other window would close.
-  button(tools, '✕', info.webtop ? 'Close pane (the webtop keeps running)' : info.session ? 'Close pane (the session keeps running)' : 'Close pane', () => window.planner.close(win.id, id), 'close').disabled =
+  button(tools, '✕', info.app ? `Close pane (${info.app} keeps running)` : info.session ? 'Close pane (the session keeps running)' : 'Close pane', () => window.planner.close(win.id, id), 'close').disabled =
     win.panes.length === 1 && !win.locked;
 
   el.append(zone, tools, proc, source);
@@ -328,7 +336,7 @@ function paneBox(win, id) {
   return el;
 }
 
-// A locked window with no panes: start a shell, a multiplexer session or a webtop in it.
+// A locked window with no panes: start a shell, a multiplexer session or a linuxserver app in it.
 function emptyBox(win) {
   const el = document.createElement('div');
   el.className = 'empty';

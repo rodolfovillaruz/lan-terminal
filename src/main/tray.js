@@ -16,7 +16,7 @@ function createTray(config, windows) {
 
   const label = (w) => {
     if (w.panes.length === 0) return 'Empty window (locked)';
-    const name = w.webtop ? `webtop ${w.webtop}` : w.session ? `${w.mux} ${w.session}` : w.process;
+    const name = w.app ? `${w.app} ${w.instance}` : w.session ? `${w.mux} ${w.session}` : w.process;
     return w.title === name || w.title === w.process ? name : `${name} — ${w.title}`;
   };
 

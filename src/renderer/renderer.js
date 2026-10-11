@@ -8,7 +8,7 @@ async function main() {
   ]);
 
   const root = document.getElementById('terminal');
-  const webLayer = document.getElementById('webtops');
+  const webLayer = document.getElementById('apps');
   const overlay = document.getElementById('move-overlay');
   // paneId -> { el, syncSize, focus, dispose }, plus term for terminal panes and
   // place/update for web panes. el is what sits in the split tree.
@@ -21,14 +21,14 @@ async function main() {
     window.terminal.focusPane(id);
   };
 
-  // A webtop's desktop. Moving an iframe in the page reloads it, and the split tree is
-  // rebuilt on every layout change, so the iframe lives in its own layer and is laid
-  // over an empty slot in the tree instead.
+  // A linuxserver app's UI (webtop, chromium, ...). Moving an iframe in the page
+  // reloads it, and the split tree is rebuilt on every layout change, so the iframe
+  // lives in its own layer and is laid over an empty slot in the tree instead.
   const createWebPane = (id, info) => {
     const el = document.createElement('div');
     el.className = 'pane web';
     const box = document.createElement('div');
-    box.className = 'webtop';
+    box.className = 'app';
     webLayer.appendChild(box);
     let url = null;
     let frame = null;

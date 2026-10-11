@@ -52,11 +52,11 @@ html, body {
 .split.row > * + * { border-left: 1px solid rgba(230, 230, 230, 0.18); }
 .split.col > * + * { border-top: 1px solid rgba(230, 230, 230, 0.18); }
 
-/* A webtop pane is an empty slot in the tree; its desktop sits over it in #webtops,
+/* An app pane is an empty slot in the tree; its UI sits over it in #apps,
    which the move overlay still covers. */
 .pane.web { padding: 0; }
-#webtops { position: absolute; inset: 0; pointer-events: none; }
-#webtops .webtop {
+#apps { position: absolute; inset: 0; pointer-events: none; }
+#apps .app {
   position: absolute;
   display: flex;
   align-items: center;
@@ -64,9 +64,9 @@ html, body {
   pointer-events: auto;
   background: #000;
 }
-#webtops .webtop[hidden] { display: none; }
-#webtops iframe { width: 100%; height: 100%; border: 0; display: block; }
-#webtops p { color: rgba(230, 230, 230, 0.7); font: 16px 'JetBrainsMono NL NFM', monospace; }
+#apps .app[hidden] { display: none; }
+#apps iframe { width: 100%; height: 100%; border: 0; display: block; }
+#apps p { color: rgba(230, 230, 230, 0.7); font: 16px 'JetBrainsMono NL NFM', monospace; }
 
 /* No visible scrollbar in the captured image; scrollback still works with the wheel. */
 .xterm .xterm-viewport { scrollbar-width: none; }
