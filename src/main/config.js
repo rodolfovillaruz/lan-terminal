@@ -16,6 +16,7 @@ const DEFAULTS = {
   ptmux: null,
   tmux: null,
   screen: null,
+  docker: null, // for webtop panes; null = find on $PATH
   fontSize: 16,
   width: null, // null = primary display width
   height: null, // null = primary display height

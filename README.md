@@ -54,6 +54,7 @@ On first run the app writes a config file to `~/.config/lan-terminal/config.json
 | `shell` | `null` | `null` means `$SHELL`, otherwise the shell you set |
 | `shellArgs` | `["-l"]` | Shell arguments (default starts a login shell) |
 | `ptmux` / `tmux` / `screen` | `null` | Paths to the multiplexers for session panes; `null` looks on `$PATH`, then in `~/.cargo/bin` |
+| `docker` | `null` | Path to docker, for webtop panes; `null` looks on `$PATH` |
 | `fontSize` | `16` | Font size |
 | `width` / `height` | `null` | Window size; `null` means the primary display's size |
 | `background` / `foreground` | `#000000` / `#e6e6e6` | Terminal colours |
@@ -69,7 +70,7 @@ Send `Authorization: Bearer <token>` on every request. You can also put `?token=
 
 | Method & path | Body | Action |
 |---|---|---|
-| `GET /windows` | | List windows: `id, title, process, mux, session, x, y, width, height, moveMode, alwaysOnTop, focused, minimized, pid, panes`; `mux` (`ptmux`, `tmux` or `screen`) and `session` name the active pane's session, or are `null` for a shell |
+| `GET /windows` | | List windows: `id, title, process, mux, session, webtop, x, y, width, height, moveMode, alwaysOnTop, focused, minimized, pid, panes`; `mux` (`ptmux`, `tmux` or `screen`) and `session` name the active pane's session, or are `null` for a shell; `webtop` names the active pane's webtop |
 | `POST /windows` | | Open a new terminal window; returns `{id}` (a UUID) |
 | `POST /windows/:id/move-mode` | `{"enabled": true\|false}` | Turn move mode on or off |
 | `POST /windows/:id/always-on-top` | `{"enabled": true\|false}` | Keep the window above everything (covering the panel) and hide it from the taskbar and Alt+Tab |
@@ -94,6 +95,14 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/window
 **Plan layout…** in the tray opens the planner, which shows every window and its panes. Split, close and resize panes there, or drag a pane onto another pane of the **same** window to swap them or put it on that side. Panes do not move between windows.
 
 Each pane has a menu that picks what it shows: a **Shell**, or a session of [ptmux](../pseudo-terminal), tmux or GNU screen, either one that is running or a new one (named with the next free number). A session pane runs the multiplexer's client (`ptmux attach`, `tmux new-session -A`, `screen -x`), so closing the pane, switching it to something else, or detaching inside it only detaches: the session keeps running, and any pane in any window can pick it up again. Sessions are saved with the layout. On the next start their panes reattach, and a session that no longer exists (after a reboot, say) starts again under the same name. The menu lists only the multiplexers the app can find.
+
+The menu also offers **webtops**: full Linux desktops from [linuxserver's webtop image](https://docs.linuxserver.io/images/docker-webtop), each in its own Docker container, shown in the pane through the desktop's browser UI. It lists the app's webtop containers and a **New webtop (tag)** entry for each `lscr.io/linuxserver/webtop` tag you have pulled (`docker pull lscr.io/linuxserver/webtop:arch-kde` adds one; the app never pulls). A new webtop is the container `lan-terminal-webtop-<name>`, published only on a `127.0.0.1` port that Docker picks, with its home directory (`/config`) in the volume of the same name. Like a session, a webtop keeps running when its pane closes or switches and when the app quits, and any pane can pick it up again. The pane's **■** button stops the container; its files stay, and picking it again starts it. The app never removes containers or volumes. To delete one:
+
+```sh
+docker rm -f lan-terminal-webtop-0 && docker volume rm lan-terminal-webtop-0
+```
+
+Each running webtop holds a few GB of memory, so stop the ones you aren't using.
 
 **Move mode** puts a blue overlay over the window. Drag anywhere on it to move the window, including above the top of the screen. While the overlay is up, typing does not reach the shell. Press Esc or call `move-mode` with `{"enabled": false}` to turn it off.
 
