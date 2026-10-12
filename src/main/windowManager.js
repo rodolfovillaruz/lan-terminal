@@ -101,6 +101,17 @@ class WindowManager extends EventEmitter {
         .filter(([serial, l]) => scrcpy.validSerial(serial) && Array.isArray(l?.apps))
         .map(([serial, l]) => [serial, { apps: l.apps.filter((a) => scrcpy.validPackage(a?.package)), at: Number(l.at) || 0 }]),
     );
+    // scrcpyApps was one list for every device before it was kept per device: each
+    // device listed so far gets the apps from it that it has.
+    if (Array.isArray(config.scrcpyApps)) {
+      const old = new Set(config.scrcpyApps);
+      config.scrcpyApps = Object.fromEntries(
+        [...this.deviceApps]
+          .map(([serial, l]) => [serial, l.apps.map((a) => a.package).filter((pkg) => old.has(pkg)).sort()])
+          .filter(([, pkgs]) => pkgs.length),
+      );
+      saveConfig(config);
+    }
     this.quitting = false;
     app.on('before-quit', () => { this.quitting = true; });
     // systemd stops the service with SIGTERM. Quit through the app so the locked
@@ -289,7 +300,7 @@ class WindowManager extends EventEmitter {
     plannerAction('planner:stop-app', (app, instance) => this.stopApp(app, instance));
     plannerAction('planner:reload-page', (id, paneId) => this.reloadPage(id, paneId));
     plannerAction('planner:open-app', (id, paneId, pkg) => this.openDeviceApp(id, paneId, pkg));
-    plannerAction('planner:shown-apps', (packages) => this.setShownApps(packages));
+    plannerAction('planner:shown-apps', (serial, packages) => this.setShownApps(serial, packages));
     // A device pane's app menu is opening: the device's apps, listed now if need be.
     ipcMain.handle('planner:device-apps', (event, serial) => {
       if (!this.#plannerOpen() || event.sender !== this.planner.webContents) return [];
@@ -350,7 +361,7 @@ class WindowManager extends EventEmitter {
       // Connected Android devices and the new displays the menu offers on each, or
       // null without adb.
       // and the apps each one has had on top of a pane that still run on it.
-      // shownApps are the packages Open app… offers ([] for all).
+      // shownApps are, per device, the packages its Open app… offers (none for all).
       android: this.adb ? { devices: this.devices, displays: this.#displayChoices(), apps: this.#movableApps(), shownApps: this.#shownApps() } : null,
       // The web pages opened last, newest first.
       pages: this.#recentPages(),
@@ -360,14 +371,26 @@ class WindowManager extends EventEmitter {
     };
   }
 
+  // { serial: [package] }: per device, the apps its Open app… offers.
   #shownApps() {
-    return (Array.isArray(this.config.scrcpyApps) ? this.config.scrcpyApps : []).filter(scrcpy.validPackage);
+    const chosen = this.config.scrcpyApps;
+    if (!chosen || typeof chosen !== 'object' || Array.isArray(chosen)) return {};
+    return Object.fromEntries(
+      Object.entries(chosen)
+        .filter(([serial, pkgs]) => scrcpy.validSerial(serial) && Array.isArray(pkgs))
+        .map(([serial, pkgs]) => [serial, pkgs.filter(scrcpy.validPackage)]),
+    );
   }
 
-  // The packages Open app… offers, on every device; none offers them all.
-  setShownApps(packages) {
+  // The packages a device's Open app… offers; none offers them all.
+  setShownApps(serial, packages) {
+    if (!scrcpy.validSerial(serial)) throw new Error('bad adb serial');
     if (!Array.isArray(packages)) throw new Error('packages must be a list');
-    this.config.scrcpyApps = [...new Set(packages.filter(scrcpy.validPackage))].sort();
+    const chosen = this.#shownApps();
+    const pkgs = [...new Set(packages.filter(scrcpy.validPackage))].sort();
+    if (pkgs.length) chosen[serial] = pkgs;
+    else delete chosen[serial];
+    this.config.scrcpyApps = chosen;
     saveConfig(this.config);
     this.#changed();
     return true;

@@ -15,6 +15,8 @@ let pending = null; // state that arrived during a drag or a menu choice, drawn 
 const EDGE = 0.25; // share of a pane's width or height that counts as its edge
 
 document.getElementById('new-window').addEventListener('click', () => window.planner.newWindow());
+const chooseAppsButton = document.getElementById('choose-apps');
+chooseAppsButton.addEventListener('click', () => chooseApps());
 
 // Lays the cards out in the grid that makes them largest, keeping the screen's shape.
 function fitStage() {
@@ -431,8 +433,6 @@ function fillSourceMenu(select, current, st) {
   select.value = current ?? '';
 }
 
-const CHOOSE_APPS = ':choose'; // Open app…'s entry for the dialog; packages have no ':'
-
 // Opens an app on a device pane's screen or new display. The device's apps are
 // fetched when the menu opens (the main process keeps them a minute, and listing them
 // takes the device a few seconds the first time). Like the source menu, it holds
@@ -453,8 +453,8 @@ function appMenu(win, id, info) {
     };
     select.replaceChildren();
     option(select, '', note ?? 'Open app…').disabled = true;
-    // Only the chosen apps, when some are chosen.
-    const shown = new Set(state.android?.shownApps ?? []);
+    // Only the apps chosen for this phone, when some are chosen.
+    const shown = new Set(state.android?.shownApps?.[info.device] ?? []);
     if (shown.size) apps = apps.filter((a) => shown.has(a.package));
     // The app on the pane now, even before the list is in or when it is not chosen.
     const current = info.deviceApp;
@@ -465,15 +465,8 @@ function appMenu(win, id, info) {
       for (const app of apps.filter((a) => a.system === system)) option(group, app.package, app.name).title = app.package;
       if (group.children.length) select.appendChild(group);
     }
-    if (!note) {
-      const more = document.createElement('optgroup');
-      more.label = shown.size ? `${shown.size} chosen app${shown.size === 1 ? '' : 's'}` : 'All apps';
-      option(more, CHOOSE_APPS, 'Choose apps…').title = 'Pick the apps this menu offers';
-      select.appendChild(more);
-    }
     select.value = note ? '' : current?.package ?? '';
   };
-  let listed = [];
   fill([]);
 
   let opening = false;
@@ -489,7 +482,6 @@ function appMenu(win, id, info) {
     } finally {
       opening = false;
     }
-    listed = apps;
     fill(apps, apps.length ? null : 'No apps found');
     if (document.activeElement !== select) return;
     try {
@@ -503,71 +495,116 @@ function appMenu(win, id, info) {
     choosing = true;
     if (opening) return;
     // Reached with the keyboard.
-    listed = await window.planner.deviceApps(info.device);
-    fill(listed);
+    fill(await window.planner.deviceApps(info.device));
   });
   select.addEventListener('blur', () => {
     choosing = false;
     flush();
   });
   select.addEventListener('change', () => {
-    const value = select.value;
+    if (select.value && select.value !== info.deviceApp?.package) window.planner.openApp(win.id, id, select.value);
     select.blur();
-    if (value === CHOOSE_APPS) chooseApps(listed);
-    else if (value && value !== info.deviceApp?.package) window.planner.openApp(win.id, id, value);
   });
   return select;
 }
 
-// A checklist of a device's apps: the ticked ones are all that Open app… offers, on
-// every device (an app a device does not have just does not show there). None
-// ticked offers them all.
-function chooseApps(apps) {
+// A checklist of one phone's apps: the ticked ones are all that the Open app… menus
+// of its panes offer; none ticked offers them all. Each phone has its own list. The
+// ticks on every phone looked at are kept until Save, which saves each one's list.
+function chooseApps() {
+  const devices = state.android?.devices ?? [];
+  if (!devices.length) return;
   picking = true;
-  const shown = new Set(state.android?.shownApps ?? []);
+  const saved = state.android?.shownApps ?? {};
+  const edits = new Map(); // serial -> Set(package), for each phone looked at
+  const listed = new Map(); // serial -> its apps, once listed
+
   const dialog = document.createElement('dialog');
   dialog.className = 'choose-apps';
   const title = document.createElement('h2');
   title.textContent = 'Apps to offer in Open app…';
   const hint = document.createElement('p');
-  hint.textContent = 'Only the ticked apps show in every device pane\'s Open app… menu. With none ticked, it shows them all.';
+  hint.textContent = 'Only the ticked apps show in the Open app… menu of this phone\'s panes. With none ticked, it shows them all.';
+  const phoneRow = document.createElement('label');
+  phoneRow.className = 'phone';
+  phoneRow.textContent = 'Phone';
+  const phone = document.createElement('select');
+  for (const { serial, model } of devices) {
+    const o = document.createElement('option');
+    o.value = serial;
+    o.textContent = devices.filter((d) => d.model === model).length > 1 ? `${model} (${serial})` : model;
+    o.title = serial;
+    phone.appendChild(o);
+  }
+  // The phone in the focused window's active pane, if there is one.
+  const focused = state.windows.find((w) => w.focused) ?? state.windows[0];
+  const activeDevice = focused?.panes.find((p) => p.id === focused.active)?.device;
+  if (devices.some((d) => d.serial === activeDevice)) phone.value = activeDevice;
+  phoneRow.appendChild(phone);
   const search = document.createElement('input');
   search.type = 'search';
   search.placeholder = 'Search apps';
   search.spellcheck = false;
   const list = document.createElement('div');
   list.className = 'list';
-  const rows = [];
-  for (const [label, system] of [['Apps', false], ['System apps', true]]) {
-    const group = apps.filter((a) => a.system === system);
-    if (!group.length) continue;
-    const head = document.createElement('h3');
-    head.textContent = label;
-    list.appendChild(head);
-    for (const app of group) {
-      const row = document.createElement('label');
-      const box = document.createElement('input');
-      box.type = 'checkbox';
-      box.checked = shown.has(app.package);
-      box.value = app.package;
-      const name = document.createElement('span');
-      name.textContent = app.name;
-      const pkg = document.createElement('small');
-      pkg.textContent = app.package;
-      row.append(box, name, pkg);
-      list.appendChild(row);
-      rows.push({ row, box, head, text: `${app.name} ${app.package}`.toLowerCase() });
-    }
-  }
-  // Chosen apps this device does not have stay chosen.
-  const elsewhere = [...shown].filter((pkg) => !apps.some((a) => a.package === pkg));
-  search.addEventListener('input', () => {
+  let rows = [];
+
+  const note = (text) => {
+    const p = document.createElement('div');
+    p.className = 'note';
+    p.textContent = text;
+    return p;
+  };
+  const filter = () => {
     const q = search.value.trim().toLowerCase();
     for (const r of rows) r.row.hidden = Boolean(q) && !r.text.includes(q);
     for (const head of list.querySelectorAll('h3')) {
       head.hidden = rows.every((r) => r.head !== head || r.row.hidden);
     }
-  });
+  };
+  // Lists the phone's apps, ticked as last saved or as ticked since the dialog opened.
+  const show = async (serial) => {
+    rows = [];
+    list.replaceChildren(note('Loading apps…'));
+    let apps = listed.get(serial);
+    if (!apps) {
+      apps = await window.planner.deviceApps(serial);
+      listed.set(serial, apps);
+    }
+    if (phone.value !== serial || !dialog.open) return;
+    if (!edits.has(serial)) edits.set(serial, new Set(saved[serial] ?? []));
+    const ticked = edits.get(serial);
+    list.replaceChildren();
+    for (const [label, system] of [['Apps', false], ['System apps', true]]) {
+      const group = apps.filter((a) => a.system === system);
+      if (!group.length) continue;
+      const head = document.createElement('h3');
+      head.textContent = label;
+      list.appendChild(head);
+      for (const app of group) {
+        const row = document.createElement('label');
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = ticked.has(app.package);
+        box.addEventListener('change', () => {
+          if (box.checked) ticked.add(app.package);
+          else ticked.delete(app.package);
+        });
+        const name = document.createElement('span');
+        name.textContent = app.name;
+        const pkg = document.createElement('small');
+        pkg.textContent = app.package;
+        row.append(box, name, pkg);
+        list.appendChild(row);
+        rows.push({ row, box, head, text: `${app.name} ${app.package}`.toLowerCase() });
+      }
+    }
+    if (!rows.length) list.appendChild(note('No apps found'));
+    filter();
+  };
+  phone.addEventListener('change', () => show(phone.value));
+  search.addEventListener('input', filter);
+
   const buttons = document.createElement('div');
   buttons.className = 'buttons';
   const action = (label, onClick, cls = '') => {
@@ -578,13 +615,19 @@ function chooseApps(apps) {
     b.addEventListener('click', onClick);
     buttons.appendChild(b);
   };
-  action('Untick all', () => rows.forEach((r) => { r.box.checked = false; }));
+  action('Untick all', () => {
+    edits.get(phone.value)?.clear();
+    for (const r of rows) r.box.checked = false;
+  });
   action('Cancel', () => dialog.close());
   action('Save', () => {
-    window.planner.setShownApps([...elsewhere, ...rows.filter((r) => r.box.checked).map((r) => r.box.value)]);
+    for (const [serial, ticked] of edits) {
+      const before = [...(saved[serial] ?? [])].sort().join();
+      if ([...ticked].sort().join() !== before) window.planner.setShownApps(serial, [...ticked]);
+    }
     dialog.close();
   }, 'primary');
-  dialog.append(title, hint, search, list, buttons);
+  dialog.append(title, hint, phoneRow, search, list, buttons);
   dialog.addEventListener('close', () => {
     dialog.remove();
     picking = false;
@@ -593,6 +636,7 @@ function chooseApps(apps) {
   document.body.appendChild(dialog);
   dialog.showModal();
   search.focus();
+  show(phone.value);
 }
 
 function paneBox(win, id) {
@@ -706,6 +750,12 @@ function render(next) {
     return;
   }
   state = next;
+  // Shown with adb; usable once a phone is connected.
+  chooseAppsButton.hidden = !state.android;
+  chooseAppsButton.disabled = !state.android?.devices.length;
+  chooseAppsButton.title = chooseAppsButton.disabled
+    ? 'Connect a phone to choose the apps its Open app… menu offers'
+    : 'Choose, for each phone, the apps its Open app… menu offers';
   stage.replaceChildren(...state.windows.map((w, i) => windowCard(w, i + 1)));
   fitStage();
 }

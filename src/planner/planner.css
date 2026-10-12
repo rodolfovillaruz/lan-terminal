@@ -31,8 +31,10 @@ header {
   gap: 16px;
   padding: 14px 20px 6px;
 }
-header > div { flex: 1; }
-header > button {
+header > div:first-child { flex: 1; }
+header .actions { flex: none; display: flex; gap: 8px; }
+header .actions button[hidden] { display: none; }
+header .actions button {
   flex: none;
   padding: 6px 12px;
   border: 1px solid var(--border);
@@ -42,8 +44,9 @@ header > button {
   font: 13px system-ui, sans-serif;
   cursor: pointer;
 }
-header > button:hover { border-color: var(--accent); }
-header > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+header .actions button:hover { border-color: var(--accent); }
+header .actions button:disabled { opacity: 0.5; pointer-events: none; }
+header .actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 h1 { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
 header p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.4; }
 
@@ -261,6 +264,17 @@ dialog.choose-apps[open] { display: flex; }
 dialog.choose-apps::backdrop { background: rgba(0, 0, 0, 0.5); }
 dialog.choose-apps h2 { margin: 0; font-size: 15px; font-weight: 600; }
 dialog.choose-apps p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.4; }
+dialog.choose-apps .phone { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+dialog.choose-apps .phone select {
+  flex: 1;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #262930;
+  color: var(--text);
+  font: 13px system-ui, sans-serif;
+}
+dialog.choose-apps .list .note { padding: 12px 10px; color: var(--muted); font-size: 13px; }
 dialog.choose-apps input[type='search'] {
   padding: 5px 8px;
   border: 1px solid var(--border);
