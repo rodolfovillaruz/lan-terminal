@@ -18,7 +18,7 @@ async function main() {
   const webLayer = document.getElementById('apps');
   const overlay = document.getElementById('move-overlay');
   // paneId -> { el, syncSize, focus, dispose }, plus term for terminal panes and
-  // place/update for web panes. el is what sits in the split tree.
+  // update for web and page panes. el is what sits in the split tree.
   const panes = new Map();
   let active = null;
 
@@ -28,15 +28,33 @@ async function main() {
     window.terminal.focusPane(id);
   };
 
-  // A linuxserver app's UI (webtop, chromium, ...). Moving an iframe in the page
-  // reloads it, and the split tree is rebuilt on every layout change, so the iframe
-  // lives in its own layer and is laid over an empty slot in the tree instead.
-  const createWebPane = (id, info) => {
+  // Moving an iframe or webview in the page reloads it, and the split tree is rebuilt
+  // on every layout change, so web content lives in its own layer and is laid over an
+  // empty slot in the tree instead. Returns the slot and the box laid over it.
+  const layerSlot = () => {
     const el = document.createElement('div');
     el.className = 'pane web';
     const box = document.createElement('div');
     box.className = 'app';
     webLayer.appendChild(box);
+    // Inside the slot's border, which draws the line between panes.
+    const place = () => {
+      const r = el.getBoundingClientRect();
+      box.hidden = !el.isConnected || el.clientWidth === 0;
+      Object.assign(box.style, {
+        left: `${r.left + el.clientLeft}px`,
+        top: `${r.top + el.clientTop}px`,
+        width: `${el.clientWidth}px`,
+        height: `${el.clientHeight}px`,
+      });
+    };
+    new ResizeObserver(place).observe(el);
+    return { el, box, place };
+  };
+
+  // A linuxserver app's UI (webtop, chromium, ...).
+  const createWebPane = (id, info) => {
+    const { el, box, place } = layerSlot();
     let url = null;
     let frame = null;
 
@@ -56,27 +74,67 @@ async function main() {
         frame = null;
       }
     };
-    // Inside the slot's border, which draws the line between panes.
-    const place = () => {
-      const r = el.getBoundingClientRect();
-      box.hidden = !el.isConnected || el.clientWidth === 0;
-      Object.assign(box.style, {
-        left: `${r.left + el.clientLeft}px`,
-        top: `${r.top + el.clientTop}px`,
-        width: `${el.clientWidth}px`,
-        height: `${el.clientHeight}px`,
-      });
-    };
-    new ResizeObserver(place).observe(el);
     update(info);
 
     const p = {
       el,
       update,
-      place,
       syncSize: place,
       focus: () => frame?.focus(),
       dispose: () => box.remove(),
+    };
+    panes.set(id, p);
+    return p;
+  };
+
+  // A web page, in a webview: unlike an iframe, it shows pages that refuse to be
+  // framed. It loads its URL once and then follows its links, and tells the main
+  // process where it is, so the saved layout reopens there. A page that does not load
+  // (a dev server restarting, say) is tried again every few seconds.
+  const createPagePane = (id, info) => {
+    const { el, box, place } = layerSlot();
+    box.classList.add('page');
+    const view = document.createElement('webview');
+    view.partition = 'persist:pages';
+    view.src = info.url;
+    const status = document.createElement('p');
+    status.hidden = true;
+    box.append(view, status);
+
+    let failed = null; // the URL that did not load, while it is tried again
+    let retry = null;
+    view.addEventListener('did-start-loading', () => { failed = null; });
+    view.addEventListener('did-fail-load', (e) => {
+      // -3 is a load that was cut short by another, which is not an error.
+      if (!e.isMainFrame || e.errorCode === -3) return;
+      failed = e.validatedURL;
+      status.textContent = `${failed}: ${e.errorDescription || `error ${e.errorCode}`}. Trying again…`;
+    });
+    view.addEventListener('did-stop-loading', () => {
+      status.hidden = !failed;
+      clearTimeout(retry);
+      // A failed load leaves the webview on the URL that failed, so reload tries it again.
+      if (failed) retry = setTimeout(() => view.reload(), 3000);
+    });
+    const report = () => window.terminal.pageState(id, view.getURL(), view.getTitle());
+    view.addEventListener('did-navigate', report);
+    view.addEventListener('did-navigate-in-page', (e) => e.isMainFrame && report());
+    view.addEventListener('page-title-updated', report);
+    view.addEventListener('focus', onFocus(id));
+
+    const p = {
+      el,
+      update: () => {},
+      reload: () => {
+        clearTimeout(retry);
+        view.reload();
+      },
+      syncSize: place,
+      focus: () => view.focus(),
+      dispose: () => {
+        clearTimeout(retry);
+        box.remove();
+      },
     };
     panes.set(id, p);
     return p;
@@ -445,11 +503,12 @@ async function main() {
   const build = (node, seen, info) => {
     if (node.type === 'pane') {
       seen.add(node.id);
-      const other = info[node.id]; // a web or device pane, which has no pty
+      const other = info[node.id]; // a web, page or device pane, which has no pty
       const p = panes.get(node.id);
       if (p && other) p.update(other);
       if (p) return p.el;
       if (other?.kind === 'scrcpy') return createScrcpyPane(node.id, other).el;
+      if (other?.kind === 'page') return createPagePane(node.id, other).el;
       return (other ? createWebPane(node.id, other) : createPane(node.id)).el;
     }
     const box = document.createElement('div');
@@ -466,6 +525,7 @@ async function main() {
   window.terminal.onScrcpySession((id, video) => panes.get(id)?.session?.(video));
   window.terminal.onScrcpyPacket((id, packet) => panes.get(id)?.packet?.(packet));
   window.terminal.onScrcpyAudio((id, packet) => panes.get(id)?.audio?.(packet));
+  window.terminal.onPageReload((id) => panes.get(id)?.reload?.());
   window.terminal.onLayout((state) => {
     const seen = new Set();
     // A locked window with no panes shows just its background.

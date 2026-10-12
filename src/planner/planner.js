@@ -8,6 +8,7 @@ let drag = null; // gutter drag in progress
 let pressed = false; // pointer down on a pane, maybe about to drag it
 let dragging = null; // pane being dragged: { windowId, paneId, el, ghost, over }
 let choosing = false; // a pane's source menu has focus; a redraw would close it
+let typing = false; // a pane's URL box is open; a redraw would close it
 let pending = null; // state that arrived during a drag or a menu choice, drawn after it
 
 const EDGE = 0.25; // share of a pane's width or height that counts as its edge
@@ -117,7 +118,7 @@ const DRAG_START = 5;
 
 function startDrag(el, windowId, paneId, label) {
   el.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0 || e.target.closest('button, select')) return;
+    if (e.button !== 0 || e.target.closest('button, select, input')) return;
     e.preventDefault();
     el.setPointerCapture(e.pointerId);
     pressed = true;
@@ -190,8 +191,10 @@ function dropZone(el, e) {
   return edges.sort((a, b) => a[1] - b[1])[0][0];
 }
 
-// A pane's program: "tmux work", "ptmux 2", "chromium 0", "Pixel 8", "bash", "vim".
+// A pane's program: "tmux work", "ptmux 2", "chromium 0", "Pixel 8", "localhost:3000",
+// "bash", "vim".
 function paneName(info) {
+  if (info.page) return new URL(info.page).host;
   if (info.device) return `${info.model ?? info.device}${info.display === null ? '' : ` · ${displayLabel(info.display)}`}`;
   if (info.app) return `${info.app} ${info.instance}`;
   return info.session ? `${info.mux} ${info.session}` : info.process;
@@ -199,6 +202,7 @@ function paneName(info) {
 
 // The pane's menu value (see sourceMenu).
 function paneSource(info) {
+  if (info.page) return `page:${info.page}`;
   if (info.device) return deviceSource(info.device, info.display);
   if (info.app) return `ls:${info.app}:${info.instance}`;
   return info.session ? `${info.mux}:${info.session}` : 'shell';
@@ -234,12 +238,12 @@ function paneLabel(info) {
 }
 
 // The menu that picks what a pane shows: a shell, for each installed multiplexer
-// (ptmux, tmux, screen) a running session or a new one, or a linuxserver app such
-// as webtop or chromium (an existing container or a new one from a pulled image), or
-// the screen of a connected Android device (through scrcpy).
-// current is the pane's choice ('shell', '<mux>:<name>' or 'ls:<app>:<instance>'),
-// or null for a placeholder (an empty
-// window).
+// (ptmux, tmux, screen) a running session or a new one, a linuxserver app such
+// as webtop or chromium (an existing container or a new one from a pulled image),
+// the screen of a connected Android device (through scrcpy), or a web page (a recent
+// one, or a URL typed into the box that "Web page…" opens).
+// current is the pane's choice ('shell', '<mux>:<name>', 'ls:<app>:<instance>',
+// 'page:<url>', ...), or null for a placeholder (an empty window).
 // While the menu has focus, redraws wait, or the open menu would vanish. Opening it
 // first fetches the sessions, apps and pulled images, so an image pulled a moment
 // ago is already there.
@@ -280,10 +284,64 @@ function sourceMenu(current, onChoose) {
     flush();
   });
   select.addEventListener('change', () => {
+    if (select.value === 'page:new') {
+      urlBox(select, current, onChoose);
+      return;
+    }
     onChoose(select.value);
     select.blur();
   });
   return select;
+}
+
+// "localhost:3000/admin" -> "http://localhost:3000/admin"; null unless it makes an
+// http or https URL.
+function pageUrl(text) {
+  text = text.trim();
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) text = `http://${text}`;
+  try {
+    const url = new URL(text);
+    return ['http:', 'https:'].includes(url.protocol) && url.host ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+// Takes the source menu's place: Enter opens the URL in the pane, Esc or clicking
+// away puts the menu back. Starts from the pane's own page, if it shows one.
+function urlBox(select, current, onChoose) {
+  typing = true;
+  const input = document.createElement('input');
+  input.className = 'source url';
+  input.type = 'text';
+  input.spellcheck = false;
+  input.placeholder = 'localhost:3000';
+  input.title = 'A web page to show in this pane. Enter opens it, Esc cancels.';
+  input.value = current?.startsWith('page:') ? current.slice(5) : '';
+  let done = false;
+  const close = (choice) => {
+    if (done) return;
+    done = true;
+    typing = false;
+    choosing = false; // the menu may not have seen its own blur when the box replaced it
+    if (choice) onChoose(choice);
+    select.value = current ?? '';
+    if (input.isConnected) input.replaceWith(select);
+    flush();
+  };
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape') close(null);
+    if (e.key !== 'Enter') return;
+    const url = pageUrl(input.value);
+    input.classList.toggle('invalid', !url);
+    if (url) close(`page:${url}`);
+  });
+  input.addEventListener('input', () => input.classList.remove('invalid'));
+  input.addEventListener('blur', () => close(null));
+  select.replaceWith(input);
+  input.focus();
+  input.select();
 }
 
 function fillSourceMenu(select, current, st) {
@@ -342,6 +400,14 @@ function fillSourceMenu(select, current, st) {
       select.appendChild(group);
     }
   }
+  // The pane's own page, the pages opened last, and a box for any other.
+  const pages = document.createElement('optgroup');
+  pages.label = 'Web pages';
+  const urls = new Set(st.pages ?? []);
+  if (current?.startsWith('page:')) urls.add(current.slice(5));
+  for (const url of urls) option(pages, `page:${url}`, url.replace(/^https?:\/\//, '')).title = url;
+  option(pages, 'page:new', 'Web page…');
+  select.appendChild(pages);
   select.value = current ?? '';
 }
 
@@ -432,6 +498,7 @@ function paneBox(win, id) {
   tools.className = 'tools';
   button(tools, '◫', 'Split pane right', () => window.planner.split(win.id, id, 'row'));
   button(tools, '⊟', 'Split pane down', () => window.planner.split(win.id, id, 'col'));
+  if (info.page) button(tools, '↻', 'Reload the page', () => window.planner.reloadPage(win.id, id));
   if (info.app) {
     const name = paneName(info);
     button(tools, '■', `Stop ${name} (its files stay in its volume)`, () => {
@@ -454,7 +521,8 @@ function paneBox(win, id) {
   return el;
 }
 
-// A locked window with no panes: start a shell, a multiplexer session or a linuxserver app in it.
+// A locked window with no panes: start a shell, a multiplexer session, a linuxserver
+// app, a device or a web page in it.
 function emptyBox(win) {
   const el = document.createElement('div');
   el.className = 'empty';
@@ -518,7 +586,7 @@ function flush() {
 // arrives during a drag, or while a source menu is open, waits for it to end.
 function render(next) {
   if (!next) return;
-  if (drag || dragging || pressed || choosing) {
+  if (drag || dragging || pressed || choosing || typing) {
     pending = next;
     return;
   }

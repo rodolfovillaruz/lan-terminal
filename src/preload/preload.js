@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld('terminal', {
   write: (paneId, data) => ipcRenderer.send('pty:input', paneId, data),
   resize: (paneId, cols, rows) => ipcRenderer.send('pty:resize', paneId, cols, rows),
   focusPane: (paneId) => ipcRenderer.send('pane:focus', paneId),
+  // Web page panes: where the page went, and reloads asked for from the planner.
+  pageState: (paneId, url, title) => ipcRenderer.send('page:state', paneId, url, title),
+  onPageReload: (cb) => ipcRenderer.on('page:reload', (_e, paneId) => cb(paneId)),
   copy: (text) => ipcRenderer.send('clipboard:write', text),
   paste: () => ipcRenderer.invoke('clipboard:read'),
   // Android device panes: the video stream in, touch and key events out.

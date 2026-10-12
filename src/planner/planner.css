@@ -244,3 +244,18 @@ select.source {
 }
 select.source:hover { border-color: var(--accent); }
 select.source:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* The URL box that "Web page…" opens in place of the menu. */
+input.source.url {
+  width: 90%;
+  max-width: 320px;
+  padding: 3px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: #262930;
+  color: var(--text);
+  font: 12px 'JetBrainsMono NL NFM', monospace;
+  outline: none;
+  user-select: text;
+}
+input.source.url.invalid { border-color: var(--danger); }

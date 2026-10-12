@@ -19,15 +19,28 @@ const ZONES = {
   bottom: { dir: 'col', before: false },
 };
 
+// Web page panes load http and https pages only.
+const RECENT_PAGES = 10;
+const validPage = (url) => {
+  if (typeof url !== 'string' || url.length > 4096) return false;
+  try {
+    return ['http:', 'https:'].includes(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+};
+
 // What a pane shows, as a source: null for a shell, { mux, name } for a multiplexer
 // session, { app, instance, tag } for a linuxserver app (e.g. chromium 0), { device,
 // display } for an Android device (its adb serial): its screen, or with display a
-// new virtual display on it (see scrcpy.validDisplay). A saved pane shape stores it
-// as its leaf: 'pane', { <mux>: name } (e.g. { tmux: 'work' }), { linuxserver: app,
-// name, tag } or { scrcpy: serial, display, startApp }, where startApp is the app
-// last opened on a new display, which opens again when the display comes back. { webtop: name, tag } is the older form for a
-// webtop.
+// new virtual display on it (see scrcpy.validDisplay), or { page } for a web page
+// (its URL). A saved pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g.
+// { tmux: 'work' }), { linuxserver: app, name, tag }, { scrcpy: serial, display,
+// startApp }, where startApp is the app last opened on a new display, which opens
+// again when the display comes back, or { page: url }, the page it was last on.
+// { webtop: name, tag } is the older form for a webtop.
 const leafSource = (s) => {
+  if (validPage(s?.page)) return { page: s.page };
   if (scrcpy.validSerial(s?.scrcpy)) {
     const display = scrcpy.validDisplay(s.display) ? s.display : null;
     return { device: s.scrcpy, display, startApp: display !== null && scrcpy.validPackage(s.startApp) ? s.startApp : null };
@@ -40,8 +53,9 @@ const leafSource = (s) => {
 };
 const isLeaf = (s) => s === 'pane' || leafSource(s) !== null;
 const paneLeaf = (p) =>
-  p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
+  p.page ? { page: p.page } : p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
 const sameSource = (p, source) =>
+  (p.page ?? null) === (source?.page ?? null) &&
   (p.device ?? null) === (source?.device ?? null) && (p.display ?? null) === (source?.display ?? null) &&
   p.app === (source?.app ?? null) && p.instance === (source?.instance ?? null) &&
   p.mux === (source?.mux ?? null) && p.session === (source?.name ?? null);
@@ -61,6 +75,8 @@ class WindowManager extends EventEmitter {
     //     an Android device's screen or a new display on it (see scrcpy.js); the
     //     window decodes the stream. fitSize is the pane's size in pixels, which a
     //     flex display ('fit') follows.
+    //   kind 'page': { page } shows a web page in a webview; page is the URL it is on,
+    //     which follows its links, so the saved layout reopens where it was.
     this.terminals = new Map();
     this.saveTimer = null;
     this.planner = null; // the layout planner window, while open
@@ -184,6 +200,22 @@ class WindowManager extends EventEmitter {
       pane.fitSize = { width: Math.min(width, 0xffff), height: Math.min(height, 0xffff) };
       pane.mirror?.send({ type: 'resizeDisplay', ...pane.fitSize });
     });
+    // A page pane went to another URL or changed its title.
+    ipcMain.on('page:state', (event, paneId, url, title) => {
+      const pane = this.#pane(event, paneId);
+      if (pane?.kind !== 'page') return;
+      let changed = false;
+      if (validPage(url) && url !== pane.page) {
+        pane.page = url;
+        changed = true;
+        this.#saveSoon();
+      }
+      if (typeof title === 'string' && title !== pane.title) {
+        pane.title = title || new URL(pane.page).host;
+        changed = true;
+      }
+      if (changed) this.#changed();
+    });
     ipcMain.on('pane:focus', (event, paneId) => {
       const term = this.#fromSender(event);
       if (term && term.panes.has(paneId) && term.activePane !== paneId) {
@@ -247,6 +279,7 @@ class WindowManager extends EventEmitter {
     plannerAction('planner:source', (id, paneId, source) => this.setPaneSource(id, paneId, source));
     plannerAction('planner:add-pane', (id, source) => this.addPane(id, source));
     plannerAction('planner:stop-app', (app, instance) => this.stopApp(app, instance));
+    plannerAction('planner:reload-page', (id, paneId) => this.reloadPage(id, paneId));
     plannerAction('planner:open-app', (id, paneId, pkg) => this.openDeviceApp(id, paneId, pkg));
     // A device pane's app menu is opening: the device's apps, listed now if need be.
     ipcMain.handle('planner:device-apps', (event, serial) => {
@@ -292,7 +325,7 @@ class WindowManager extends EventEmitter {
   #paneList(term) {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
-      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, model: p.model ?? null, pid: p.pty?.pid ?? null };
+      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, page: p.page ?? null, device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, model: p.model ?? null, pid: p.pty?.pid ?? null };
     });
   }
 
@@ -307,10 +340,16 @@ class WindowManager extends EventEmitter {
       // Connected Android devices and the new displays the menu offers on each, or
       // null without adb.
       android: this.adb ? { devices: this.devices, displays: this.#displayChoices() } : null,
+      // The web pages opened last, newest first.
+      pages: this.#recentPages(),
       windows: [...this.terminals.values()]
         .filter((t) => !t.closed && !t.win.isDestroyed())
         .map((t) => ({ id: t.id, focused: t.win.isFocused(), locked: t.locked, layout: t.layout, active: t.activePane, panes: this.#paneList(t) })),
     };
+  }
+
+  #recentPages() {
+    return (Array.isArray(this.config.recentPages) ? this.config.recentPages : []).filter(validPage);
   }
 
   // A new display at the main screen's size, one that fits its pane, and the sizes
@@ -380,6 +419,7 @@ class WindowManager extends EventEmitter {
     const panes = {};
     for (const p of term.panes.values()) {
       if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: `${p.app} ${p.instance} (${p.tag})` };
+      if (p.kind === 'page') panes[p.id] = { kind: 'page', url: p.page };
       if (p.kind === 'scrcpy') panes[p.id] = { kind: 'scrcpy', status: p.status, fit: scrcpy.isFit(p.display), captureMouse: p.mirror?.capturesMouse ?? false };
     }
     term.win.webContents.send('layout', { layout: term.layout, active: term.activePane, panes });
@@ -554,7 +594,24 @@ class WindowManager extends EventEmitter {
     return id;
   }
 
+  // A page pane is a webview in the window, which loads the page, follows its links
+  // and reports where it is (see 'page:state'). The page goes away with the pane.
+  #spawnPagePane(term, { page }) {
+    const id = crypto.randomUUID();
+    term.panes.set(id, { id, kind: 'page', page, mux: null, session: null, app: null, instance: null, title: new URL(page).host, process: 'web', exited: false });
+    return id;
+  }
+
+  // Reloads a page pane, e.g. after a change to the page on the server.
+  reloadPage(id, paneId) {
+    const term = this.get(id);
+    if (term?.panes.get(paneId)?.kind !== 'page' || term.win.isDestroyed()) return false;
+    term.win.webContents.send('page:reload', paneId);
+    return true;
+  }
+
   #makePane(term, source) {
+    if (source?.page) return this.#spawnPagePane(term, source);
     if (source?.device) return this.#spawnScrcpyPane(term, source);
     return source?.app ? this.#spawnWebPane(term, source) : this.#spawnPane(term, source);
   }
@@ -588,13 +645,20 @@ class WindowManager extends EventEmitter {
 
   // A planner menu choice: 'shell', '<mux>:new', '<mux>:<name>' (e.g. 'tmux:work'),
   // 'ls:new:<app>:<tag>' (e.g. 'ls:new:chromium:latest'), 'ls:<app>:<instance>' or
-  // 'scrcpy:<adb serial>' or 'scrcpy-display:<display>:<adb serial>' (a new display,
-  // see scrcpy.validDisplay).
+  // 'scrcpy:<adb serial>', 'scrcpy-display:<display>:<adb serial>' (a new display,
+  // see scrcpy.validDisplay) or 'page:<url>' (a web page).
   // Returns a source (see leafSource). A new session or app instance gets the smallest
   // free number, like `ptmux new` and `tmux new`
   // without a name, skipping names that panes already use.
   async #resolveSource(source) {
     if (source === 'shell') return null;
+    if (typeof source === 'string' && source.startsWith('page:')) {
+      const page = source.slice(5);
+      if (!validPage(page)) throw new Error('a web page must be an http or https URL');
+      this.config.recentPages = [page, ...this.#recentPages().filter((u) => u !== page)].slice(0, RECENT_PAGES);
+      saveConfig(this.config);
+      return { page };
+    }
     if (typeof source === 'string' && source.startsWith('ls:')) return this.#resolveApp(source.slice(3).split(':'));
     if (typeof source === 'string' && /^scrcpy(-display)?:/.test(source)) {
       // Serials of devices on the network contain ':' themselves; displays do not.
@@ -693,9 +757,44 @@ class WindowManager extends EventEmitter {
         sandbox: true,
         // A device pane plays the device's sound without a click first.
         autoplayPolicy: 'no-user-gesture-required',
+        // Web page panes; see will-attach-webview below.
+        webviewTag: true,
       },
     });
     win.setMenu(null);
+
+    // A page pane's webview gets no preload or Node, only http(s) pages, and the
+    // session that keeps logins across restarts.
+    win.webContents.on('will-attach-webview', (event, prefs, params) => {
+      delete prefs.preload;
+      Object.assign(prefs, { nodeIntegration: false, nodeIntegrationInSubFrames: false, contextIsolation: true, sandbox: true });
+      if (!validPage(params.src) || params.partition !== 'persist:pages') event.preventDefault();
+    });
+    win.webContents.on('did-attach-webview', (_event, guest) => {
+      // Links that open a new window open in the pane instead.
+      guest.setWindowOpenHandler(({ url }) => {
+        if (validPage(url)) guest.loadURL(url);
+        return { action: 'deny' };
+      });
+      // Browser keys: F5 or Ctrl+R reloads (with Shift, past the cache), Alt+Left and
+      // Alt+Right go back and forward.
+      guest.on('before-input-event', (event, input) => {
+        if (input.type !== 'keyDown') return;
+        const ctrl = input.control || input.meta;
+        const nav = guest.navigationHistory;
+        if (input.key === 'F5' || (ctrl && input.code === 'KeyR')) {
+          if (input.shift) guest.reloadIgnoringCache();
+          else guest.reload();
+        } else if (input.alt && !ctrl && input.key === 'ArrowLeft' && nav.canGoBack()) {
+          nav.goBack();
+        } else if (input.alt && !ctrl && input.key === 'ArrowRight' && nav.canGoForward()) {
+          nav.goForward();
+        } else {
+          return;
+        }
+        event.preventDefault();
+      });
+    });
 
     const term = { id, win, panes: new Map(), layout: null, activePane: null, locked: Boolean(locked), moveMode: false, alwaysOnTop: false, ready: false };
     this.terminals.set(id, term);
@@ -774,6 +873,7 @@ class WindowManager extends EventEmitter {
           session: active?.session ?? null,
           app: active?.app ?? null,
           instance: active?.instance ?? null,
+          page: active?.page ?? null,
           device: active?.device ?? null,
           display: active?.display ?? null,
           x: b.x,
@@ -814,7 +914,8 @@ class WindowManager extends EventEmitter {
     return true;
   }
 
-  // A shell, multiplexer session or linuxserver app (see #resolveSource) in an empty window.
+  // A shell, multiplexer session, linuxserver app, device or web page (see
+  // #resolveSource) in an empty window.
   async addPane(id, choice = 'shell') {
     const source = await this.#resolveSource(choice);
     const term = this.get(id);
