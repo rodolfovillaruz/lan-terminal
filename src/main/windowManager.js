@@ -289,6 +289,7 @@ class WindowManager extends EventEmitter {
     plannerAction('planner:stop-app', (app, instance) => this.stopApp(app, instance));
     plannerAction('planner:reload-page', (id, paneId) => this.reloadPage(id, paneId));
     plannerAction('planner:open-app', (id, paneId, pkg) => this.openDeviceApp(id, paneId, pkg));
+    plannerAction('planner:shown-apps', (packages) => this.setShownApps(packages));
     // A device pane's app menu is opening: the device's apps, listed now if need be.
     ipcMain.handle('planner:device-apps', (event, serial) => {
       if (!this.#plannerOpen() || event.sender !== this.planner.webContents) return [];
@@ -349,13 +350,27 @@ class WindowManager extends EventEmitter {
       // Connected Android devices and the new displays the menu offers on each, or
       // null without adb.
       // and the apps each one has had on top of a pane that still run on it.
-      android: this.adb ? { devices: this.devices, displays: this.#displayChoices(), apps: this.#movableApps() } : null,
+      // shownApps are the packages Open app… offers ([] for all).
+      android: this.adb ? { devices: this.devices, displays: this.#displayChoices(), apps: this.#movableApps(), shownApps: this.#shownApps() } : null,
       // The web pages opened last, newest first.
       pages: this.#recentPages(),
       windows: [...this.terminals.values()]
         .filter((t) => !t.closed && !t.win.isDestroyed())
         .map((t) => ({ id: t.id, focused: t.win.isFocused(), locked: t.locked, layout: t.layout, active: t.activePane, panes: this.#paneList(t) })),
     };
+  }
+
+  #shownApps() {
+    return (Array.isArray(this.config.scrcpyApps) ? this.config.scrcpyApps : []).filter(scrcpy.validPackage);
+  }
+
+  // The packages Open app… offers, on every device; none offers them all.
+  setShownApps(packages) {
+    if (!Array.isArray(packages)) throw new Error('packages must be a list');
+    this.config.scrcpyApps = [...new Set(packages.filter(scrcpy.validPackage))].sort();
+    saveConfig(this.config);
+    this.#changed();
+    return true;
   }
 
   // An app's name from the device's app list, or its package until the list is in.

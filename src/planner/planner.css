@@ -245,6 +245,75 @@ select.source {
 select.source:hover { border-color: var(--accent); }
 select.source:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
+/* Chooses the apps a device pane's Open app… menu offers. */
+dialog.choose-apps {
+  width: min(520px, 90vw);
+  max-height: 80vh;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  flex-direction: column;
+  gap: 8px;
+}
+dialog.choose-apps[open] { display: flex; }
+dialog.choose-apps::backdrop { background: rgba(0, 0, 0, 0.5); }
+dialog.choose-apps h2 { margin: 0; font-size: 15px; font-weight: 600; }
+dialog.choose-apps p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.4; }
+dialog.choose-apps input[type='search'] {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #262930;
+  color: var(--text);
+  font: 13px system-ui, sans-serif;
+  outline: none;
+  user-select: text;
+}
+dialog.choose-apps input[type='search']:focus { border-color: var(--accent); }
+dialog.choose-apps .list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  padding: 4px 0;
+}
+dialog.choose-apps h3 { margin: 8px 10px 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
+dialog.choose-apps h3[hidden], dialog.choose-apps label[hidden] { display: none; }
+dialog.choose-apps label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+dialog.choose-apps label:hover { background: #1d2026; }
+dialog.choose-apps label input { accent-color: var(--accent); }
+dialog.choose-apps label small {
+  margin-left: auto;
+  color: var(--muted);
+  font: 11px 'JetBrainsMono NL NFM', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+dialog.choose-apps .buttons { display: flex; gap: 8px; justify-content: flex-end; }
+dialog.choose-apps .buttons button {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #262930;
+  color: var(--text);
+  font: 13px system-ui, sans-serif;
+  cursor: pointer;
+}
+dialog.choose-apps .buttons button:first-child { margin-right: auto; }
+dialog.choose-apps .buttons button:hover { border-color: var(--accent); }
+dialog.choose-apps .buttons button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
 /* The URL box that "Web page…" opens in place of the menu. */
 input.source.url {
   width: 90%;
