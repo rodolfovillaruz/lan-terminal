@@ -419,6 +419,16 @@ async function main() {
     };
     new ResizeObserver(syncSize).observe(el);
 
+    // Ctrl+Shift+C copies the selection; with nothing selected it does nothing, so it
+    // never reaches the shell as Ctrl+C. Ctrl+Shift+V pastes the clipboard.
+    term.attachCustomKeyEventHandler((e) => {
+      if (!(e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey)) return true;
+      if (e.code !== 'KeyC' && e.code !== 'KeyV') return true;
+      if (e.type === 'keydown' && e.code === 'KeyC' && term.hasSelection()) window.terminal.copy(term.getSelection());
+      if (e.type === 'keydown' && e.code === 'KeyV') window.terminal.paste().then((text) => text && term.paste(text));
+      e.preventDefault();
+      return false;
+    });
     term.onData((data) => window.terminal.write(id, data));
     // The main process splits "<paneId>\t<title>" back apart; the OS title stays fixed.
     term.onTitleChange((title) => { document.title = `${id}\t${title}`; });

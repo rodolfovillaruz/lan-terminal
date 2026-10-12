@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('terminal', {
   write: (paneId, data) => ipcRenderer.send('pty:input', paneId, data),
   resize: (paneId, cols, rows) => ipcRenderer.send('pty:resize', paneId, cols, rows),
   focusPane: (paneId) => ipcRenderer.send('pane:focus', paneId),
+  copy: (text) => ipcRenderer.send('clipboard:write', text),
+  paste: () => ipcRenderer.invoke('clipboard:read'),
   // Android device panes: the video stream in, touch and key events out.
   scrcpyReady: (paneId) => ipcRenderer.send('scrcpy:ready', paneId),
   scrcpyInput: (paneId, msg) => ipcRenderer.send('scrcpy:input', paneId, msg),

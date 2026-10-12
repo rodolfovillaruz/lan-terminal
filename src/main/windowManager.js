@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, clipboard, ipcMain, screen } = require('electron');
 const { EventEmitter } = require('events');
 const path = require('path');
 const os = require('os');
@@ -116,6 +116,10 @@ class WindowManager extends EventEmitter {
 
     // Renderer -> PTY. The sender identifies the window; the pane id picks the shell in it.
     ipcMain.on('pty:input', (event, paneId, data) => this.#pane(event, paneId)?.pty?.write(data));
+    ipcMain.on('clipboard:write', (event, text) => {
+      if (this.#fromSender(event) && typeof text === 'string') clipboard.writeText(text);
+    });
+    ipcMain.handle('clipboard:read', (event) => (this.#fromSender(event) ? clipboard.readText() : ''));
     ipcMain.on('pty:resize', (event, paneId, cols, rows) => {
       const pane = this.#pane(event, paneId);
       if (pane?.pty && cols > 0 && rows > 0) pane.pty.resize(cols, rows);
