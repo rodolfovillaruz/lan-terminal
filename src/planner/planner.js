@@ -195,7 +195,10 @@ function dropZone(el, e) {
 // "bash", "vim".
 function paneName(info) {
   if (info.page) return new URL(info.page).host;
-  if (info.device) return `${info.model ?? info.device}${info.display === null ? '' : ` · ${displayLabel(info.display)}`}`;
+  if (info.device) {
+    const display = info.display === null ? '' : ` · ${displayLabel(info.display)}`;
+    return `${info.model ?? info.device}${display}${info.deviceApp ? ` · ${info.deviceApp.name}` : ''}`;
+  }
   if (info.app) return `${info.app} ${info.instance}`;
   return info.session ? `${info.mux} ${info.session}` : info.process;
 }
@@ -203,6 +206,7 @@ function paneName(info) {
 // The pane's menu value (see sourceMenu).
 function paneSource(info) {
   if (info.page) return `page:${info.page}`;
+  if (info.device && info.deviceApp) return appSource(info.device, info.deviceApp.package);
   if (info.device) return deviceSource(info.device, info.display);
   if (info.app) return `ls:${info.app}:${info.instance}`;
   return info.session ? `${info.mux}:${info.session}` : 'shell';
@@ -211,6 +215,12 @@ function paneSource(info) {
 // A device's screen ('scrcpy:<serial>'), or a new display on it (see displayLabel).
 function deviceSource(serial, display) {
   return display === null ? `scrcpy:${serial}` : `scrcpy-display:${display}:${serial}`;
+}
+
+// An app that has been on a device pane, moving to the pane that picks it. Package
+// names cannot contain ':'.
+function appSource(serial, pkg) {
+  return `scrcpy-app:${pkg}:${serial}`;
 }
 
 // deviceSource's value back as { serial, display }. Serials can contain ':', and
@@ -240,8 +250,9 @@ function paneLabel(info) {
 // The menu that picks what a pane shows: a shell, for each installed multiplexer
 // (ptmux, tmux, screen) a running session or a new one, a linuxserver app such
 // as webtop or chromium (an existing container or a new one from a pulled image),
-// the screen of a connected Android device (through scrcpy), or a web page (a recent
-// one, or a URL typed into the box that "Web page…" opens).
+// the screen of a connected Android device (through scrcpy) or a new display on it,
+// an app that has been on a device pane (which moves it to this pane), or a web page
+// (a recent one, or a URL typed into the box that "Web page…" opens).
 // current is the pane's choice ('shell', '<mux>:<name>', 'ls:<app>:<instance>',
 // 'page:<url>', ...), or null for a placeholder (an empty window).
 // While the menu has focus, redraws wait, or the open menu would vanish. Opening it
@@ -389,10 +400,18 @@ function fillSourceMenu(select, current, st) {
       option(group, deviceSource(serial, null), 'Screen');
       for (const display of st.android.displays) option(group, deviceSource(serial, display), capitalize(displayLabel(display)));
       select.appendChild(group);
+      // Apps that have been on its panes. Picking one moves it to this pane.
+      const apps = st.android.apps?.[serial] ?? [];
+      if (apps.length) {
+        const appGroup = document.createElement('optgroup');
+        appGroup.label = `${model} apps`;
+        for (const app of apps) option(appGroup, appSource(serial, app.package), app.name).title = `${app.package}: move it to this pane`;
+        select.appendChild(appGroup);
+      }
     }
     // The pane's own device, even while it is disconnected, or its display when the
     // config no longer offers it.
-    if (current?.startsWith('scrcpy') && ![...select.options].some((o) => o.value === current)) {
+    if (current?.startsWith('scrcpy') && !current.startsWith('scrcpy-app:') && ![...select.options].some((o) => o.value === current)) {
       const group = document.createElement('optgroup');
       group.label = 'Android (scrcpy)';
       const { serial, display } = parseDeviceSource(current);
@@ -431,13 +450,16 @@ function appMenu(win, id, info) {
     };
     select.replaceChildren();
     option(select, '', note ?? 'Open app…').disabled = true;
+    // The app on the pane now, even before the list is in.
+    const current = info.deviceApp;
+    if (current && !apps.some((a) => a.package === current.package)) option(select, current.package, current.name).title = current.package;
     for (const [label, system] of [['Apps', false], ['System apps', true]]) {
       const group = document.createElement('optgroup');
       group.label = label;
       for (const app of apps.filter((a) => a.system === system)) option(group, app.package, app.name).title = app.package;
       if (group.children.length) select.appendChild(group);
     }
-    select.value = '';
+    select.value = note ? '' : current?.package ?? '';
   };
   fill([]);
 
@@ -474,7 +496,7 @@ function appMenu(win, id, info) {
     flush();
   });
   select.addEventListener('change', () => {
-    if (select.value) window.planner.openApp(win.id, id, select.value);
+    if (select.value && select.value !== info.deviceApp?.package) window.planner.openApp(win.id, id, select.value);
     select.blur();
   });
   return select;

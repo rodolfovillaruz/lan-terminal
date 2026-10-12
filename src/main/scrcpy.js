@@ -108,6 +108,41 @@ async function apps({ adb, version, server }, serial) {
   return found.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 }
 
+// What runs on the device's displays, from `am stack list`, which lists each
+// display's root tasks from top to bottom: { top: Map(display id -> package on top,
+// or null for the home screen), running: Set(packages with a task) }. Launchers and
+// other system task types (home, recents, ...) count as no app.
+async function tasks(adb, serial) {
+  const out = await run(adb, ['-s', serial, 'shell', 'am', 'stack', 'list'], 5000);
+  const top = new Map();
+  const running = new Set();
+  let display = null;
+  let first = false; // the next task is its display's top one
+  let system = false;
+  for (const line of out.split('\n')) {
+    // "RootTask id=1 ... displayId=0 ..." ("Stack id=" before Android 12)
+    const root = line.match(/^(?:RootTask|Stack) id=\d+ .*\bdisplayId=(\d+)/);
+    if (root) {
+      display = Number(root[1]);
+      first = !top.has(display);
+      if (first) top.set(display, null);
+      system = false;
+      continue;
+    }
+    if (/mActivityType=(?!standard\b)/.test(line)) system = true;
+    // "  taskId=12: com.foo/.Main bounds=... topActivity=ComponentInfo{com.foo/.Other}"
+    const task = line.match(/^\s+taskId=\d+: ([^/\s]+)/);
+    if (!task || display === null) continue;
+    const pkg = line.match(/topActivity=ComponentInfo\{([^/}]+)\//)?.[1] ?? task[1];
+    if (!system && validPackage(pkg)) {
+      running.add(pkg);
+      if (first) top.set(display, pkg);
+    }
+    first = false;
+  }
+  return { top, running };
+}
+
 // Control messages (client -> device), as scrcpy's app/src/control_msg.c writes them.
 const TYPE = { keycode: 0, text: 1, touch: 2, scroll: 3, backOrScreenOn: 4, uhidCreate: 12, uhidInput: 13, uhidDestroy: 14, startApp: 16, resetVideo: 17, resizeDisplay: 21 };
 const POINTER_FINGER = 0xfffffffffffffffen; // SC_POINTER_ID_GENERIC_FINGER
@@ -310,6 +345,9 @@ class Mirror extends EventEmitter {
     this.ended = false;
     this.hid = null; // the captured mouse and keyboard's state, while captured
     this.sdk = 0; // the device's Android API level
+    // The display it shows: 0, the device's screen, or a new display's id, which the
+    // server logs once it has made the display.
+    this.displayId = validDisplay(options.display) ? null : 0;
   }
 
   // Before Android 15 a USB mouse moves the pointer on the device's own screen only,
@@ -338,11 +376,16 @@ class Mirror extends EventEmitter {
       ...(this.options.audio && this.options.audioDup ? ['audio_source=playback', 'audio_dup=true'] : []),
       ...this.#displayArgs(),
     ]);
-    // The last line the server printed explains why it stopped.
+    // The last line the server printed explains why it stopped. A new display's id
+    // comes in "New display: 1920x1080/240 (id=12)".
     let last = '';
     const log = (data) => {
       const lines = String(data).split('\n').map((l) => l.trim()).filter(Boolean);
       if (lines.length) last = lines[lines.length - 1].replace(/^\[server\] /, '');
+      for (const line of lines) {
+        const id = line.match(/New display: .*\(id=(\d+)\)/)?.[1];
+        if (id !== undefined) this.displayId = Number(id);
+      }
     };
     this.proc.stdout.on('data', log);
     this.proc.stderr.on('data', log);
@@ -531,4 +574,4 @@ class Mirror extends EventEmitter {
   }
 }
 
-module.exports = { validSerial, validDisplay, isFit, validPackage, findAdb, findScrcpy, devices, apps, encode, Mirror };
+module.exports = { validSerial, validDisplay, isFit, validPackage, findAdb, findScrcpy, devices, apps, tasks, encode, Mirror };

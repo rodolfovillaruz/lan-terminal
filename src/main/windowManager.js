@@ -74,7 +74,8 @@ class WindowManager extends EventEmitter {
     //   kind 'scrcpy': { device, display, model, mirror, status, video, fitSize } shows
     //     an Android device's screen or a new display on it (see scrcpy.js); the
     //     window decodes the stream. fitSize is the pane's size in pixels, which a
-    //     flex display ('fit') follows.
+    //     flex display ('fit') follows. foreground is the app on top of the display
+    //     it shows (a package), or null for the home screen or while it is not known.
     //   kind 'page': { page } shows a web page in a webview; page is the URL it is on,
     //     which follows its links, so the saved layout reopens where it was.
     this.terminals = new Map();
@@ -88,6 +89,11 @@ class WindowManager extends EventEmitter {
     this.adb = scrcpy.findAdb(config.adb);
     this.devices = []; // Android devices as last listed: [{ serial, model }]
     this.scrcpyTools = null; // the installed scrcpy's { version, server }, once found
+    // serial -> Set(package): apps that have been on top of a pane, which the pane
+    // menus offer to move to another pane while they run (see #pollDeviceApps).
+    this.paneApps = new Map();
+    this.runningApps = new Map(); // serial -> Set(package), as last listed
+    this.appPoll = null; // the listing under way, if any
     // serial -> { apps, at, loading }: each device's apps for the planner's app menus,
     // kept on disk between runs.
     this.deviceApps = new Map(
@@ -129,6 +135,8 @@ class WindowManager extends EventEmitter {
     setInterval(() => {
       if (this.#plannerOpen()) this.refreshSessions();
     }, 2000);
+    // Which app each device pane shows, for the planner and for the saved layout.
+    setInterval(() => this.#pollDeviceApps(), 3000);
 
     // Renderer -> PTY. The sender identifies the window; the pane id picks the shell in it.
     ipcMain.on('pty:input', (event, paneId, data) => this.#pane(event, paneId)?.pty?.write(data));
@@ -259,7 +267,7 @@ class WindowManager extends EventEmitter {
     ipcMain.handle('planner:state', () => this.#plannerState());
     // A pane menu is opening: list sessions, linuxserver apps and pulled images now.
     ipcMain.handle('planner:refresh', async (event) => {
-      if (this.#plannerOpen() && event.sender === this.planner.webContents) await this.refreshSessions();
+      if (this.#plannerOpen() && event.sender === this.planner.webContents) await Promise.all([this.refreshSessions(), this.#pollDeviceApps()]);
       return this.#plannerState();
     });
     const plannerAction = (channel, fn) =>
@@ -325,7 +333,8 @@ class WindowManager extends EventEmitter {
   #paneList(term) {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
-      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, page: p.page ?? null, device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, model: p.model ?? null, pid: p.pty?.pid ?? null };
+      const deviceApp = p.foreground ? { package: p.foreground, name: this.#appName(p.device, p.foreground) } : null;
+      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, page: p.page ?? null, device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, deviceApp, model: p.model ?? null, pid: p.pty?.pid ?? null };
     });
   }
 
@@ -339,13 +348,90 @@ class WindowManager extends EventEmitter {
       linuxserver: this.docker ? this.apps : null,
       // Connected Android devices and the new displays the menu offers on each, or
       // null without adb.
-      android: this.adb ? { devices: this.devices, displays: this.#displayChoices() } : null,
+      // and the apps each one has had on top of a pane that still run on it.
+      android: this.adb ? { devices: this.devices, displays: this.#displayChoices(), apps: this.#movableApps() } : null,
       // The web pages opened last, newest first.
       pages: this.#recentPages(),
       windows: [...this.terminals.values()]
         .filter((t) => !t.closed && !t.win.isDestroyed())
         .map((t) => ({ id: t.id, focused: t.win.isFocused(), locked: t.locked, layout: t.layout, active: t.activePane, panes: this.#paneList(t) })),
     };
+  }
+
+  // An app's name from the device's app list, or its package until the list is in.
+  #appName(serial, pkg) {
+    return this.deviceApps.get(serial)?.apps?.find((a) => a.package === pkg)?.name ?? pkg;
+  }
+
+  #devicePanes() {
+    return [...this.terminals.values()].flatMap((t) => [...t.panes.values()].filter((p) => p.kind === 'scrcpy' && !p.exited));
+  }
+
+  // { serial: [{ package, name }] }: per device, the apps that have been on top of a
+  // pane and still run, or are on top of one now, by name.
+  #movableApps() {
+    const shown = new Map();
+    for (const p of this.#devicePanes()) if (p.foreground) shown.set(p.device, (shown.get(p.device) ?? new Set()).add(p.foreground));
+    const out = {};
+    for (const serial of new Set([...this.paneApps.keys(), ...shown.keys()])) {
+      const running = this.runningApps.get(serial) ?? new Set();
+      const pkgs = new Set([...(shown.get(serial) ?? []), ...[...(this.paneApps.get(serial) ?? [])].filter((pkg) => running.has(pkg))]);
+      out[serial] = [...pkgs]
+        .map((pkg) => ({ package: pkg, name: this.#appName(serial, pkg) }))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    }
+    return out;
+  }
+
+  // Reads which app is on top of each connected device pane's display. A new display
+  // remembers it as its startApp, so the saved layout brings back the app it last
+  // showed, however it was opened. A listing already under way is shared.
+  #pollDeviceApps() {
+    this.appPoll ??= (async () => {
+      const panes = this.#devicePanes().filter((p) => p.mirror && p.video);
+      let changed = false;
+      await Promise.all([...new Set(panes.map((p) => p.device))].map(async (serial) => {
+        let found;
+        try {
+          found = await scrcpy.tasks(this.adb, serial);
+        } catch {
+          return;
+        }
+        const running = this.runningApps.get(serial);
+        if (!running || [...found.running].join() !== [...running].join()) changed = true;
+        this.runningApps.set(serial, found.running);
+        for (const p of panes) {
+          if (p.device !== serial || p.exited) continue;
+          const top = found.top.get(p.mirror?.displayId) ?? null;
+          if (top) this.paneApps.set(serial, (this.paneApps.get(serial) ?? new Set()).add(top));
+          if (top !== p.foreground) {
+            p.foreground = top;
+            changed = true;
+          }
+          if (top && p.display !== null && p.startApp !== top) {
+            p.startApp = top;
+            this.#saveSoon();
+          }
+        }
+      }));
+      if (changed) this.#changed();
+    })().finally(() => { this.appPoll = null; });
+    return this.appPoll;
+  }
+
+  // pkg is moving to pane: no other pane holds on to it, so a saved layout does not
+  // open it in two places.
+  #claimApp(pane, pkg) {
+    this.paneApps.set(pane.device, (this.paneApps.get(pane.device) ?? new Set()).add(pkg));
+    for (const p of this.#devicePanes()) {
+      if (p === pane || p.device !== pane.device) continue;
+      if (p.startApp === pkg) p.startApp = null;
+      if (p.foreground === pkg) p.foreground = null;
+    }
+    pane.foreground = pkg;
+    if (pane.display !== null) pane.startApp = pkg;
+    this.#changed();
+    this.#saveSoon();
   }
 
   #recentPages() {
@@ -384,6 +470,8 @@ class WindowManager extends EventEmitter {
     try {
       const apps = await loading;
       this.deviceApps.set(serial, { apps, at: Date.now() });
+      // The pane menus name the apps on device panes from this list.
+      this.#changed();
       const lists = Object.fromEntries([...this.deviceApps].filter(([, l]) => l.apps).map(([s, l]) => [s, { apps: l.apps, at: l.at }]));
       try {
         saveDeviceApps(lists);
@@ -404,12 +492,9 @@ class WindowManager extends EventEmitter {
     const pane = term?.panes.get(paneId);
     if (pane?.kind !== 'scrcpy' || !scrcpy.validPackage(pkg)) return false;
     if (!pane.mirror || !pane.video) throw new Error(`${pane.model} is not connected`);
+    // Starting an app that runs on another display moves it to this one.
     pane.mirror.send({ type: 'startApp', package: pkg });
-    if (pane.display !== null && pane.startApp !== pkg) {
-      pane.startApp = pkg;
-      this.#changed();
-      this.#saveSoon();
-    }
+    this.#claimApp(pane, pkg);
     return true;
   }
 
@@ -582,6 +667,7 @@ class WindowManager extends EventEmitter {
       mirror.on('audio-off', (reason) => console.warn(`scrcpy ${device}: no sound: ${reason}`));
       mirror.on('end', (err) => {
         if (pane.mirror === mirror) pane.mirror = null;
+        pane.foreground = null;
         pane.audioConfig = null;
         pane.video = null;
         if (pane.exited) return;
@@ -646,7 +732,8 @@ class WindowManager extends EventEmitter {
   // A planner menu choice: 'shell', '<mux>:new', '<mux>:<name>' (e.g. 'tmux:work'),
   // 'ls:new:<app>:<tag>' (e.g. 'ls:new:chromium:latest'), 'ls:<app>:<instance>' or
   // 'scrcpy:<adb serial>', 'scrcpy-display:<display>:<adb serial>' (a new display,
-  // see scrcpy.validDisplay) or 'page:<url>' (a web page).
+  // see scrcpy.validDisplay), 'scrcpy-app:<package>:<adb serial>' (an app moving from
+  // the pane it is on) or 'page:<url>' (a web page).
   // Returns a source (see leafSource). A new session or app instance gets the smallest
   // free number, like `ptmux new` and `tmux new`
   // without a name, skipping names that panes already use.
@@ -660,6 +747,18 @@ class WindowManager extends EventEmitter {
       return { page };
     }
     if (typeof source === 'string' && source.startsWith('ls:')) return this.#resolveApp(source.slice(3).split(':'));
+    // An app that has been on a device pane, moving to this pane: 'scrcpy-app:<package>:<serial>'.
+    if (typeof source === 'string' && source.startsWith('scrcpy-app:')) {
+      const rest = source.slice(11);
+      const pkg = rest.slice(0, rest.indexOf(':'));
+      const serial = rest.slice(pkg.length + 1);
+      if (!this.adb) throw new Error('adb is not installed');
+      if (!scrcpy.validSerial(serial) || !scrcpy.validPackage(pkg)) throw new Error('bad device app');
+      // A pane that is not on the device becomes a new display like the one the app
+      // is on, or one that fits the pane.
+      const from = this.#devicePanes().find((p) => p.device === serial && p.foreground === pkg && p.display !== null);
+      return { device: serial, display: from?.display ?? 'fit', startApp: pkg, move: true };
+    }
     if (typeof source === 'string' && /^scrcpy(-display)?:/.test(source)) {
       // Serials of devices on the network contain ':' themselves; displays do not.
       let rest = source.slice(source.indexOf(':') + 1);
@@ -876,6 +975,7 @@ class WindowManager extends EventEmitter {
           page: active?.page ?? null,
           device: active?.device ?? null,
           display: active?.display ?? null,
+          deviceApp: active?.foreground ?? null,
           x: b.x,
           y: b.y,
           width: b.width,
@@ -921,6 +1021,7 @@ class WindowManager extends EventEmitter {
     const term = this.get(id);
     if (!term || term.layout) return false;
     const paneId = this.#makePane(term, source);
+    if (source?.move) this.#claimApp(term.panes.get(paneId), source.startApp);
     this.#setLayout(term, layout.pane(paneId), paneId);
     this.#pushLayout(term);
     return true;
@@ -933,8 +1034,14 @@ class WindowManager extends EventEmitter {
     const source = await this.#resolveSource(choice);
     const term = this.get(id);
     const old = term?.panes.get(paneId);
-    if (!old || term.closed || sameSource(old, source)) return false;
+    if (!old || term.closed) return false;
+    // A pane already on the app's device keeps its display and opens the app there.
+    if (source?.move && old.device === source.device && old.mirror && old.video) {
+      return old.foreground === source.startApp || this.openDeviceApp(id, paneId, source.startApp);
+    }
+    if (!source?.move && sameSource(old, source)) return false;
     const newId = this.#makePane(term, source);
+    if (source?.move) this.#claimApp(term.panes.get(newId), source.startApp);
     // Out of the map first, so the old pty's exit does not remove the pane's place.
     term.panes.delete(paneId);
     this.#endPane(old);
