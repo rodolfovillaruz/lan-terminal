@@ -348,19 +348,24 @@ class WindowManager extends EventEmitter {
     this.#sendPlanners();
   }
 
+  // The planner window, or a planner pane, is open.
   #plannerOpen() {
-    return Boolean(this.planner && !this.planner.isDestroyed()) || this.panePlanners.size > 0;
+    return this.#plannerWindowOpen() || this.panePlanners.size > 0;
+  }
+
+  #plannerWindowOpen() {
+    return Boolean(this.planner && !this.planner.isDestroyed());
   }
 
   #isPlanner(sender) {
-    return (Boolean(this.planner && !this.planner.isDestroyed()) && sender === this.planner.webContents) || this.panePlanners.has(sender);
+    return (this.#plannerWindowOpen() && sender === this.planner.webContents) || this.panePlanners.has(sender);
   }
 
   // The planner window and every planner pane redraw from the same state.
   #sendPlanners() {
     if (!this.#plannerOpen()) return;
     const st = this.#plannerState();
-    if (this.planner && !this.planner.isDestroyed()) this.planner.webContents.send('planner:state', st);
+    if (this.#plannerWindowOpen()) this.planner.webContents.send('planner:state', st);
     for (const wc of this.panePlanners) wc.send('planner:state', st);
   }
 
@@ -1293,7 +1298,7 @@ class WindowManager extends EventEmitter {
   // It stays on top because the capture windows fill the screen.
   openPlanner() {
     this.refreshSessions();
-    if (this.#plannerOpen()) {
+    if (this.#plannerWindowOpen()) {
       this.planner.show();
       this.planner.focus();
       return true;
