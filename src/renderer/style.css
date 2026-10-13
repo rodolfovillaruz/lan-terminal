@@ -71,7 +71,8 @@ html, body {
 #apps .app[hidden] { display: none; }
 #apps iframe { width: 100%; height: 100%; border: 0; display: block; }
 #apps webview { width: 100%; height: 100%; display: flex; }
-#apps .app.page p {
+#apps video { width: 100%; height: 100%; object-fit: contain; display: block; }
+#apps .app.page p, #apps .app.camera p {
   position: absolute;
   inset: 0;
   margin: 0;
@@ -82,7 +83,7 @@ html, body {
   text-align: center;
   background: #000;
 }
-#apps .app.page p[hidden] { display: none; }
+#apps .app.page p[hidden], #apps .app.camera p[hidden] { display: none; }
 #apps p { color: rgba(230, 230, 230, 0.7); font: 16px 'JetBrainsMono NL NFM', monospace; }
 
 /* An Android device's screen, letterboxed in its pane. */

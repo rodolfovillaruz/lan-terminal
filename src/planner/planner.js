@@ -207,6 +207,7 @@ function dropZone(el, e) {
 // "bash", "vim".
 function paneName(info) {
   if (info.planner) return 'Plan layout';
+  if (info.droidcam) return 'DroidCam';
   if (info.page) return new URL(info.page).host;
   if (info.device) {
     const display = info.display === null ? '' : ` · ${displayLabel(info.display)}`;
@@ -219,6 +220,7 @@ function paneName(info) {
 // The pane's menu value (see sourceMenu).
 function paneSource(info) {
   if (info.planner) return 'planner';
+  if (info.droidcam) return 'droidcam';
   if (info.page) return `page:${info.page}`;
   if (info.device && info.deviceApp) return appSource(info.device, info.deviceApp.package);
   if (info.device) return deviceSource(info.device, info.display);
@@ -266,7 +268,8 @@ function paneLabel(info) {
 // as webtop or chromium (an existing container or a new one from a pulled image),
 // the screen of a connected Android device (through scrcpy) or a new display on it,
 // an app that has been on a device pane (which moves it to this pane), a web page
-// (a recent one, or a URL typed into the box that "Web page…" opens), or this planner.
+// (a recent one, or a URL typed into the box that "Web page…" opens), DroidCam's
+// camera, or this planner.
 // current is the pane's choice ('shell', '<mux>:<name>', 'ls:<app>:<instance>',
 // 'page:<url>', 'planner', ...), or null for a placeholder (an empty window).
 // While the menu has focus, redraws wait, or the open menu would vanish. Opening it
@@ -433,6 +436,13 @@ function fillSourceMenu(select, current, st) {
       option(group, current, `${serial}${display === null ? '' : ` · ${displayLabel(display)}`}`);
       select.appendChild(group);
     }
+  }
+  // DroidCam's camera, when its module is loaded (or the pane already shows it).
+  if (st.droidcam || current === 'droidcam') {
+    const group = document.createElement('optgroup');
+    group.label = 'Cameras';
+    option(group, 'droidcam', 'DroidCam').title = "The phone's camera, through DroidCam's V4L2 loopback device";
+    select.appendChild(group);
   }
   // The pane's own page, the pages opened last, and a box for any other.
   const pages = document.createElement('optgroup');

@@ -18,7 +18,7 @@ async function main() {
   const webLayer = document.getElementById('apps');
   const overlay = document.getElementById('move-overlay');
   // paneId -> { el, syncSize, focus, dispose }, plus term for terminal panes and
-  // update for web, page and planner panes. el is what sits in the split tree.
+  // update for web, page, planner and camera panes. el is what sits in the split tree.
   const panes = new Map();
   let active = null;
 
@@ -155,6 +155,86 @@ async function main() {
       syncSize: place,
       focus: () => view.focus(),
       dispose: () => box.remove(),
+    };
+    panes.set(id, p);
+    return p;
+  };
+
+  // A V4L2 camera, such as the loopback device DroidCam feeds the phone's camera into,
+  // found by its name. A camera that is not there, or that cannot be opened or stops,
+  // says so and is tried again every few seconds. A loopback device opens even when
+  // nothing feeds it, and then sends no frames, so the pane also says when none have
+  // come for a while, and clears that once they do.
+  const createCameraPane = (id, info) => {
+    const { el, box, place } = layerSlot();
+    box.classList.add('camera');
+    const video = document.createElement('video');
+    video.autoplay = true;
+    video.muted = true;
+    const status = document.createElement('p');
+    box.append(video, status);
+
+    let stream = null;
+    let retry = null;
+    let disposed = false;
+    let lastFrame = 0; // when the last frame showed, or 0 for none since opening
+    const STALL = 3000;
+    const onFrame = () => {
+      lastFrame = performance.now();
+      if (stream) status.hidden = true;
+      video.requestVideoFrameCallback(onFrame);
+    };
+    video.requestVideoFrameCallback(onFrame);
+    const watch = setInterval(() => {
+      if (!stream || performance.now() - lastFrame < STALL) return;
+      status.textContent = `No video from ${info.label}. Is the phone connected in the ${info.label} app?`;
+      status.hidden = false;
+    }, 1000);
+    const stop = () => {
+      stream?.getTracks().forEach((t) => t.stop());
+      stream = null;
+      video.srcObject = null;
+    };
+    const wait = (text) => {
+      stop();
+      status.textContent = `${text} Trying again…`;
+      status.hidden = false;
+      retry = setTimeout(connect, 3000);
+    };
+    const connect = async () => {
+      retry = null;
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const camera = devices.find((d) => d.kind === 'videoinput' && d.label.toLowerCase().includes(info.name.toLowerCase()));
+        if (!camera) return disposed || wait(`${info.label} is not available.`);
+        const next = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: camera.deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        });
+        if (disposed) return next.getTracks().forEach((t) => t.stop());
+        stream = next;
+        lastFrame = performance.now(); // a grace period before saying no video came
+        video.srcObject = stream;
+        status.textContent = `Waiting for video from ${info.label}…`;
+        stream.getVideoTracks()[0].addEventListener('ended', () => disposed || wait(`${info.label} stopped.`));
+      } catch (err) {
+        if (!disposed) wait(`${info.label}: ${err.message || err.name}.`);
+      }
+    };
+    status.textContent = `Opening ${info.label}…`;
+    connect();
+
+    const p = {
+      el,
+      update: () => {},
+      syncSize: place,
+      focus: () => {},
+      dispose: () => {
+        disposed = true;
+        clearTimeout(retry);
+        clearInterval(watch);
+        stop();
+        box.remove();
+      },
     };
     panes.set(id, p);
     return p;
@@ -528,6 +608,7 @@ async function main() {
     if (other?.kind === 'scrcpy') return createScrcpyPane(id, other).el;
     if (other?.kind === 'page') return createPagePane(id, other).el;
     if (other?.kind === 'planner') return createPlannerPane(id, other).el;
+    if (other?.kind === 'camera') return createCameraPane(id, other).el;
     return (other ? createWebPane(id, other) : createPane(id)).el;
   };
   // The maximized pane goes in maxed.el, to be laid over the whole window, and an

@@ -1,5 +1,6 @@
 const { app, BrowserWindow, clipboard, ipcMain, screen, session } = require('electron');
 const { EventEmitter } = require('events');
+const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
@@ -38,18 +39,24 @@ const PLANNER_PANE_URL = `${PLANNER_URL}?pane`; // tells the page it is in a pan
 const PLANNER_PRELOAD = path.join(__dirname, '..', 'preload', 'planner-preload.js');
 const PLANNER_PARTITION = 'planner';
 
+// DroidCam's kernel module, which makes the V4L2 loopback device its client feeds the
+// phone's camera into. The window finds the device by its name, "Droidcam".
+const DROIDCAM_MODULE = '/sys/module/v4l2loopback_dc';
+
 // What a pane shows, as a source: null for a shell, { mux, name } for a multiplexer
 // session, { app, instance, tag } for a linuxserver app (e.g. chromium 0), { device,
 // display } for an Android device (its adb serial): its screen, or with display a
 // new virtual display on it (see scrcpy.validDisplay), { page } for a web page
-// (its URL), or { planner: true } for the layout planner. A saved pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g.
+// (its URL), { planner: true } for the layout planner, or { droidcam: true } for
+// DroidCam's camera. A saved pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g.
 // { tmux: 'work' }), { linuxserver: app, name, tag }, { scrcpy: serial, display,
 // startApp }, where startApp is the app last opened on a new display, which opens
-// again when the display comes back, { page: url }, the page it was last on, or
-// { planner: true }.
+// again when the display comes back, { page: url }, the page it was last on,
+// { planner: true } or { droidcam: true }.
 // { webtop: name, tag } is the older form for a webtop.
 const leafSource = (s) => {
   if (s?.planner === true) return { planner: true };
+  if (s?.droidcam === true) return { droidcam: true };
   if (validPage(s?.page)) return { page: s.page };
   if (scrcpy.validSerial(s?.scrcpy)) {
     const display = scrcpy.validDisplay(s.display) ? s.display : null;
@@ -63,9 +70,9 @@ const leafSource = (s) => {
 };
 const isLeaf = (s) => s === 'pane' || leafSource(s) !== null;
 const paneLeaf = (p) =>
-  p.planner ? { planner: true } : p.page ? { page: p.page } : p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
+  p.planner ? { planner: true } : p.droidcam ? { droidcam: true } : p.page ? { page: p.page } : p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
 const sameSource = (p, source) =>
-  Boolean(p.planner) === Boolean(source?.planner) &&
+  Boolean(p.planner) === Boolean(source?.planner) && Boolean(p.droidcam) === Boolean(source?.droidcam) &&
   (p.page ?? null) === (source?.page ?? null) &&
   (p.device ?? null) === (source?.device ?? null) && (p.display ?? null) === (source?.display ?? null) &&
   p.app === (source?.app ?? null) && p.instance === (source?.instance ?? null) &&
@@ -91,6 +98,8 @@ class WindowManager extends EventEmitter {
     //   kind 'page': { page } shows a web page in a webview; page is the URL it is on,
     //     which follows its links, so the saved layout reopens where it was.
     //   kind 'planner': { planner: true } shows the layout planner in a webview.
+    //   kind 'camera': { droidcam: true } shows DroidCam's V4L2 loopback device, which
+    //     the window opens as a camera.
     this.terminals = new Map();
     this.saveTimer = null;
     this.planner = null; // the layout planner window, while open
@@ -378,7 +387,7 @@ class WindowManager extends EventEmitter {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
       const deviceApp = p.foreground ? { package: p.foreground, name: this.#appName(p.device, p.foreground) } : null;
-      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, page: p.page ?? null, planner: Boolean(p.planner), device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, deviceApp, model: p.model ?? null, pid: p.pty?.pid ?? null };
+      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, page: p.page ?? null, planner: Boolean(p.planner), droidcam: Boolean(p.droidcam), device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, deviceApp, model: p.model ?? null, pid: p.pty?.pid ?? null };
     });
   }
 
@@ -395,6 +404,8 @@ class WindowManager extends EventEmitter {
       // and the apps each one has had on top of a pane that still run on it.
       // shownApps are, per device, the packages its Open app… offers (none for all).
       android: this.adb ? { devices: this.devices, displays: this.#displayChoices(), apps: this.#movableApps(), shownApps: this.#shownApps() } : null,
+      // DroidCam's module is loaded, so its camera can be shown.
+      droidcam: fs.existsSync(DROIDCAM_MODULE),
       // The web pages opened last, newest first.
       pages: this.#recentPages(),
       windows: [...this.terminals.values()]
@@ -576,6 +587,7 @@ class WindowManager extends EventEmitter {
       if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: `${p.app} ${p.instance} (${p.tag})` };
       if (p.kind === 'page') panes[p.id] = { kind: 'page', url: p.page };
       if (p.kind === 'planner') panes[p.id] = { kind: 'planner', url: PLANNER_PANE_URL };
+      if (p.kind === 'camera') panes[p.id] = { kind: 'camera', name: 'Droidcam', label: 'DroidCam' };
       if (p.kind === 'scrcpy') panes[p.id] = { kind: 'scrcpy', status: p.status, fit: scrcpy.isFit(p.display), captureMouse: p.mirror?.capturesMouse ?? false };
     }
     term.win.webContents.send('layout', { layout: term.layout, active: term.activePane, maximized: term.maximized, panes });
@@ -767,6 +779,14 @@ class WindowManager extends EventEmitter {
     return id;
   }
 
+  // A camera pane shows a V4L2 capture device, found and opened by the window; the
+  // DroidCam client, not the app, feeds the phone's camera into it.
+  #spawnCameraPane(term) {
+    const id = crypto.randomUUID();
+    term.panes.set(id, { id, kind: 'camera', droidcam: true, mux: null, session: null, app: null, instance: null, title: 'DroidCam', process: 'droidcam', exited: false });
+    return id;
+  }
+
   // Reloads a page pane, e.g. after a change to the page on the server.
   reloadPage(id, paneId) {
     const term = this.get(id);
@@ -777,6 +797,7 @@ class WindowManager extends EventEmitter {
 
   #makePane(term, source) {
     if (source?.planner) return this.#spawnPlannerPane(term);
+    if (source?.droidcam) return this.#spawnCameraPane(term);
     if (source?.page) return this.#spawnPagePane(term, source);
     if (source?.device) return this.#spawnScrcpyPane(term, source);
     return source?.app ? this.#spawnWebPane(term, source) : this.#spawnPane(term, source);
@@ -813,13 +834,15 @@ class WindowManager extends EventEmitter {
   // 'ls:new:<app>:<tag>' (e.g. 'ls:new:chromium:latest'), 'ls:<app>:<instance>' or
   // 'scrcpy:<adb serial>', 'scrcpy-display:<display>:<adb serial>' (a new display,
   // see scrcpy.validDisplay), 'scrcpy-app:<package>:<adb serial>' (an app moving from
-  // the pane it is on), 'page:<url>' (a web page) or 'planner' (the layout planner).
+  // the pane it is on), 'page:<url>' (a web page), 'planner' (the layout planner) or
+  // 'droidcam' (DroidCam's camera).
   // Returns a source (see leafSource). A new session or app instance gets the smallest
   // free number, like `ptmux new` and `tmux new`
   // without a name, skipping names that panes already use.
   async #resolveSource(source) {
     if (source === 'shell') return null;
     if (source === 'planner') return { planner: true };
+    if (source === 'droidcam') return { droidcam: true };
     if (typeof source === 'string' && source.startsWith('page:')) {
       const page = source.slice(5);
       if (!validPage(page)) throw new Error('a web page must be an http or https URL');
