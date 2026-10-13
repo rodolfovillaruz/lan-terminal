@@ -1,8 +1,9 @@
-const { app, BrowserWindow, clipboard, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, clipboard, ipcMain, screen, session } = require('electron');
 const { EventEmitter } = require('events');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { pathToFileURL } = require('url');
 const pty = require('node-pty');
 const { save: saveConfig, loadDeviceApps, saveDeviceApps } = require('./config');
 const layout = require('./layout');
@@ -30,16 +31,24 @@ const validPage = (url) => {
   }
 };
 
+// The planner, in its own window or in a pane (a webview in the planner partition).
+const PLANNER_PAGE = path.join(__dirname, '..', 'planner', 'planner.html');
+const PLANNER_URL = pathToFileURL(PLANNER_PAGE).href;
+const PLANNER_PRELOAD = path.join(__dirname, '..', 'preload', 'planner-preload.js');
+const PLANNER_PARTITION = 'planner';
+
 // What a pane shows, as a source: null for a shell, { mux, name } for a multiplexer
 // session, { app, instance, tag } for a linuxserver app (e.g. chromium 0), { device,
 // display } for an Android device (its adb serial): its screen, or with display a
-// new virtual display on it (see scrcpy.validDisplay), or { page } for a web page
-// (its URL). A saved pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g.
+// new virtual display on it (see scrcpy.validDisplay), { page } for a web page
+// (its URL), or { planner: true } for the layout planner. A saved pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g.
 // { tmux: 'work' }), { linuxserver: app, name, tag }, { scrcpy: serial, display,
 // startApp }, where startApp is the app last opened on a new display, which opens
-// again when the display comes back, or { page: url }, the page it was last on.
+// again when the display comes back, { page: url }, the page it was last on, or
+// { planner: true }.
 // { webtop: name, tag } is the older form for a webtop.
 const leafSource = (s) => {
+  if (s?.planner === true) return { planner: true };
   if (validPage(s?.page)) return { page: s.page };
   if (scrcpy.validSerial(s?.scrcpy)) {
     const display = scrcpy.validDisplay(s.display) ? s.display : null;
@@ -53,8 +62,9 @@ const leafSource = (s) => {
 };
 const isLeaf = (s) => s === 'pane' || leafSource(s) !== null;
 const paneLeaf = (p) =>
-  p.page ? { page: p.page } : p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
+  p.planner ? { planner: true } : p.page ? { page: p.page } : p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
 const sameSource = (p, source) =>
+  Boolean(p.planner) === Boolean(source?.planner) &&
   (p.page ?? null) === (source?.page ?? null) &&
   (p.device ?? null) === (source?.device ?? null) && (p.display ?? null) === (source?.display ?? null) &&
   p.app === (source?.app ?? null) && p.instance === (source?.instance ?? null) &&
@@ -79,9 +89,11 @@ class WindowManager extends EventEmitter {
     //     it shows (a package), or null for the home screen or while it is not known.
     //   kind 'page': { page } shows a web page in a webview; page is the URL it is on,
     //     which follows its links, so the saved layout reopens where it was.
+    //   kind 'planner': { planner: true } shows the layout planner in a webview.
     this.terminals = new Map();
     this.saveTimer = null;
     this.planner = null; // the layout planner window, while open
+    this.panePlanners = new Set(); // the webContents of planners shown in panes
     // Installed multiplexers: mux -> binary path.
     this.muxes = new Map(mux.NAMES.map((m) => [m, mux.find(m, config[m])]).filter(([, bin]) => bin));
     this.sessions = new Map(); // mux -> Map(session name -> target), as last listed
@@ -279,12 +291,12 @@ class WindowManager extends EventEmitter {
     ipcMain.handle('planner:state', () => this.#plannerState());
     // A pane menu is opening: list sessions, linuxserver apps and pulled images now.
     ipcMain.handle('planner:refresh', async (event) => {
-      if (this.#plannerOpen() && event.sender === this.planner.webContents) await Promise.all([this.refreshSessions(), this.#pollDeviceApps()]);
+      if (this.#isPlanner(event.sender)) await Promise.all([this.refreshSessions(), this.#pollDeviceApps()]);
       return this.#plannerState();
     });
     const plannerAction = (channel, fn) =>
       ipcMain.on(channel, async (event, ...args) => {
-        if (!this.#plannerOpen() || event.sender !== this.planner.webContents) return;
+        if (!this.#isPlanner(event.sender)) return;
         try {
           await fn(...args);
         } catch (err) {
@@ -305,7 +317,7 @@ class WindowManager extends EventEmitter {
     plannerAction('planner:shown-apps', (serial, packages) => this.setShownApps(serial, packages));
     // A device pane's app menu is opening: the device's apps, listed now if need be.
     ipcMain.handle('planner:device-apps', (event, serial) => {
-      if (!this.#plannerOpen() || event.sender !== this.planner.webContents) return [];
+      if (!this.#isPlanner(event.sender)) return [];
       return this.#deviceApps(serial).catch((err) => {
         console.warn(`apps on ${serial}:`, err.message);
         return [];
@@ -332,11 +344,23 @@ class WindowManager extends EventEmitter {
   // from the same notification as the tray and the LAN clients.
   #changed() {
     this.emit('changed', this.list());
-    if (this.#plannerOpen()) this.planner.webContents.send('planner:state', this.#plannerState());
+    this.#sendPlanners();
   }
 
   #plannerOpen() {
-    return Boolean(this.planner && !this.planner.isDestroyed());
+    return Boolean(this.planner && !this.planner.isDestroyed()) || this.panePlanners.size > 0;
+  }
+
+  #isPlanner(sender) {
+    return (Boolean(this.planner && !this.planner.isDestroyed()) && sender === this.planner.webContents) || this.panePlanners.has(sender);
+  }
+
+  // The planner window and every planner pane redraw from the same state.
+  #sendPlanners() {
+    if (!this.#plannerOpen()) return;
+    const st = this.#plannerState();
+    if (this.planner && !this.planner.isDestroyed()) this.planner.webContents.send('planner:state', st);
+    for (const wc of this.panePlanners) wc.send('planner:state', st);
   }
 
   #fullBounds() {
@@ -348,7 +372,7 @@ class WindowManager extends EventEmitter {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
       const deviceApp = p.foreground ? { package: p.foreground, name: this.#appName(p.device, p.foreground) } : null;
-      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, page: p.page ?? null, device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, deviceApp, model: p.model ?? null, pid: p.pty?.pid ?? null };
+      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, page: p.page ?? null, planner: Boolean(p.planner), device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, deviceApp, model: p.model ?? null, pid: p.pty?.pid ?? null };
     });
   }
 
@@ -545,6 +569,7 @@ class WindowManager extends EventEmitter {
     for (const p of term.panes.values()) {
       if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: `${p.app} ${p.instance} (${p.tag})` };
       if (p.kind === 'page') panes[p.id] = { kind: 'page', url: p.page };
+      if (p.kind === 'planner') panes[p.id] = { kind: 'planner', url: PLANNER_URL };
       if (p.kind === 'scrcpy') panes[p.id] = { kind: 'scrcpy', status: p.status, fit: scrcpy.isFit(p.display), captureMouse: p.mirror?.capturesMouse ?? false };
     }
     term.win.webContents.send('layout', { layout: term.layout, active: term.activePane, maximized: term.maximized, panes });
@@ -728,6 +753,14 @@ class WindowManager extends EventEmitter {
     return id;
   }
 
+  // A planner pane is a webview in the window that loads the planner page with its
+  // preload (see will-attach-webview), so it edits every window's layout, its own too.
+  #spawnPlannerPane(term) {
+    const id = crypto.randomUUID();
+    term.panes.set(id, { id, kind: 'planner', planner: true, mux: null, session: null, app: null, instance: null, title: 'Plan layout', process: 'planner', exited: false });
+    return id;
+  }
+
   // Reloads a page pane, e.g. after a change to the page on the server.
   reloadPage(id, paneId) {
     const term = this.get(id);
@@ -737,6 +770,7 @@ class WindowManager extends EventEmitter {
   }
 
   #makePane(term, source) {
+    if (source?.planner) return this.#spawnPlannerPane(term);
     if (source?.page) return this.#spawnPagePane(term, source);
     if (source?.device) return this.#spawnScrcpyPane(term, source);
     return source?.app ? this.#spawnWebPane(term, source) : this.#spawnPane(term, source);
@@ -766,19 +800,20 @@ class WindowManager extends EventEmitter {
     this.sessions = next.sessions;
     this.apps = next.apps;
     this.devices = next.devices;
-    if (this.#plannerOpen()) this.planner.webContents.send('planner:state', this.#plannerState());
+    this.#sendPlanners();
   }
 
   // A planner menu choice: 'shell', '<mux>:new', '<mux>:<name>' (e.g. 'tmux:work'),
   // 'ls:new:<app>:<tag>' (e.g. 'ls:new:chromium:latest'), 'ls:<app>:<instance>' or
   // 'scrcpy:<adb serial>', 'scrcpy-display:<display>:<adb serial>' (a new display,
   // see scrcpy.validDisplay), 'scrcpy-app:<package>:<adb serial>' (an app moving from
-  // the pane it is on) or 'page:<url>' (a web page).
+  // the pane it is on), 'page:<url>' (a web page) or 'planner' (the layout planner).
   // Returns a source (see leafSource). A new session or app instance gets the smallest
   // free number, like `ptmux new` and `tmux new`
   // without a name, skipping names that panes already use.
   async #resolveSource(source) {
     if (source === 'shell') return null;
+    if (source === 'planner') return { planner: true };
     if (typeof source === 'string' && source.startsWith('page:')) {
       const page = source.slice(5);
       if (!validPage(page)) throw new Error('a web page must be an http or https URL');
@@ -912,13 +947,27 @@ class WindowManager extends EventEmitter {
     win.setMenu(null);
 
     // A page pane's webview gets no preload or Node, only http(s) pages, and the
-    // session that keeps logins across restarts.
+    // session that keeps logins across restarts. A planner pane's gets the planner
+    // page and the planner window's preload, in a session of its own.
     win.webContents.on('will-attach-webview', (event, prefs, params) => {
       delete prefs.preload;
       Object.assign(prefs, { nodeIntegration: false, nodeIntegrationInSubFrames: false, contextIsolation: true, sandbox: true });
-      if (!validPage(params.src) || params.partition !== 'persist:pages') event.preventDefault();
+      if (params.src === PLANNER_URL && params.partition === PLANNER_PARTITION) prefs.preload = PLANNER_PRELOAD;
+      else if (!validPage(params.src) || params.partition !== 'persist:pages') event.preventDefault();
     });
     win.webContents.on('did-attach-webview', (_event, guest) => {
+      if (guest.session === session.fromPartition(PLANNER_PARTITION)) {
+        // It stays on the planner page.
+        guest.setWindowOpenHandler(() => ({ action: 'deny' }));
+        guest.on('will-navigate', (event) => event.preventDefault());
+        guest.on('before-input-event', (event, input) => {
+          if (this.#maximizeKey(term, input)) event.preventDefault();
+        });
+        this.panePlanners.add(guest);
+        guest.once('destroyed', () => this.panePlanners.delete(guest));
+        this.refreshSessions();
+        return;
+      }
       // Links that open a new window open in the pane instead.
       guest.setWindowOpenHandler(({ url }) => {
         if (validPage(url)) guest.loadURL(url);
@@ -1258,7 +1307,7 @@ class WindowManager extends EventEmitter {
       autoHideMenuBar: true,
       alwaysOnTop: true,
       webPreferences: {
-        preload: path.join(__dirname, '..', 'preload', 'planner-preload.js'),
+        preload: PLANNER_PRELOAD,
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -1269,7 +1318,7 @@ class WindowManager extends EventEmitter {
       if (this.planner === planner) this.planner = null;
     });
     this.planner = planner;
-    planner.loadFile(path.join(__dirname, '..', 'planner', 'planner.html'));
+    planner.loadFile(PLANNER_PAGE);
     return true;
   }
 }

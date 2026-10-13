@@ -18,7 +18,7 @@ async function main() {
   const webLayer = document.getElementById('apps');
   const overlay = document.getElementById('move-overlay');
   // paneId -> { el, syncSize, focus, dispose }, plus term for terminal panes and
-  // update for web and page panes. el is what sits in the split tree.
+  // update for web, page and planner panes. el is what sits in the split tree.
   const panes = new Map();
   let active = null;
 
@@ -136,6 +136,25 @@ async function main() {
         clearTimeout(retry);
         box.remove();
       },
+    };
+    panes.set(id, p);
+    return p;
+  };
+
+  // The layout planner, in a webview that the main process gives the planner's preload.
+  const createPlannerPane = (id, info) => {
+    const { el, box, place } = layerSlot();
+    const view = document.createElement('webview');
+    view.partition = 'planner';
+    view.src = info.url;
+    view.addEventListener('focus', onFocus(id));
+    box.append(view);
+    const p = {
+      el,
+      update: () => {},
+      syncSize: place,
+      focus: () => view.focus(),
+      dispose: () => box.remove(),
     };
     panes.set(id, p);
     return p;
@@ -508,6 +527,7 @@ async function main() {
     if (p) return p.el;
     if (other?.kind === 'scrcpy') return createScrcpyPane(id, other).el;
     if (other?.kind === 'page') return createPagePane(id, other).el;
+    if (other?.kind === 'planner') return createPlannerPane(id, other).el;
     return (other ? createWebPane(id, other) : createPane(id)).el;
   };
   // The maximized pane goes in maxed.el, to be laid over the whole window, and an

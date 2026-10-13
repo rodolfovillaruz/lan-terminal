@@ -197,6 +197,7 @@ function dropZone(el, e) {
 // A pane's program: "tmux work", "ptmux 2", "chromium 0", "Pixel 8", "localhost:3000",
 // "bash", "vim".
 function paneName(info) {
+  if (info.planner) return 'Plan layout';
   if (info.page) return new URL(info.page).host;
   if (info.device) {
     const display = info.display === null ? '' : ` · ${displayLabel(info.display)}`;
@@ -208,6 +209,7 @@ function paneName(info) {
 
 // The pane's menu value (see sourceMenu).
 function paneSource(info) {
+  if (info.planner) return 'planner';
   if (info.page) return `page:${info.page}`;
   if (info.device && info.deviceApp) return appSource(info.device, info.deviceApp.package);
   if (info.device) return deviceSource(info.device, info.display);
@@ -254,10 +256,10 @@ function paneLabel(info) {
 // (ptmux, tmux, screen) a running session or a new one, a linuxserver app such
 // as webtop or chromium (an existing container or a new one from a pulled image),
 // the screen of a connected Android device (through scrcpy) or a new display on it,
-// an app that has been on a device pane (which moves it to this pane), or a web page
-// (a recent one, or a URL typed into the box that "Web page…" opens).
+// an app that has been on a device pane (which moves it to this pane), a web page
+// (a recent one, or a URL typed into the box that "Web page…" opens), or this planner.
 // current is the pane's choice ('shell', '<mux>:<name>', 'ls:<app>:<instance>',
-// 'page:<url>', ...), or null for a placeholder (an empty window).
+// 'page:<url>', 'planner', ...), or null for a placeholder (an empty window).
 // While the menu has focus, redraws wait, or the open menu would vanish. Opening it
 // first fetches the sessions, apps and pulled images, so an image pulled a moment
 // ago is already there.
@@ -369,6 +371,7 @@ function fillSourceMenu(select, current, st) {
   select.replaceChildren();
   if (current === null) option(select, '', 'Open…').disabled = true;
   option(select, 'shell', 'Shell');
+  option(select, 'planner', 'Plan layout').title = 'This planner, in the pane';
   for (const mux of st.muxes) {
     const group = document.createElement('optgroup');
     group.label = `${mux.id} sessions`;
