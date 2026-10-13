@@ -644,6 +644,8 @@ function paneBox(win, id) {
   const el = document.createElement('div');
   el.className = 'pane';
   el.classList.toggle('active', id === win.active);
+  // Behind the maximized pane, so not on screen for now.
+  el.classList.toggle('covered', Boolean(win.maximized) && id !== win.maximized);
 
   const proc = document.createElement('div');
   proc.className = 'proc';
@@ -657,6 +659,16 @@ function paneBox(win, id) {
   tools.className = 'tools';
   button(tools, '◫', 'Split pane right', () => window.planner.split(win.id, id, 'row'));
   button(tools, '⊟', 'Split pane down', () => window.planner.split(win.id, id, 'col'));
+  const maxed = win.maximized === id;
+  const max = button(
+    tools,
+    maxed ? '⊡' : '⛶',
+    maxed ? 'Put the panes back (Ctrl+Shift+Alt+Z)' : 'Maximize: fill the window with this pane for now (Ctrl+Shift+Alt+Z)',
+    () => window.planner.maximize(win.id, maxed ? null : id),
+    'max',
+  );
+  max.setAttribute('aria-pressed', String(maxed));
+  max.disabled = win.panes.length === 1 && !maxed;
   if (info.page) button(tools, '↻', 'Reload the page', () => window.planner.reloadPage(win.id, id));
   if (info.app) {
     const name = paneName(info);

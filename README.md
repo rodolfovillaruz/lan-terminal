@@ -78,12 +78,13 @@ Send `Authorization: Bearer <token>` on every request. You can also put `?token=
 
 | Method & path | Body | Action |
 |---|---|---|
-| `GET /windows` | | List windows: `id, title, process, mux, session, app, instance, x, y, width, height, moveMode, alwaysOnTop, focused, minimized, pid, panes`; `mux` (`ptmux`, `tmux` or `screen`) and `session` name the active pane's session, or are `null` for a shell; `app` and `instance` name the active pane's linuxserver app (`chromium`, `0`), or are `null`; `page` is the URL a web page pane is on, or `null`; `device` is the adb serial of the active pane's Android device, or `null`, `display` its new display (`"fit"`, `"1920x1080/240"`, …), or `null` for the device's screen, and `deviceApp` the package of the app on top of it, or `null` |
+| `GET /windows` | | List windows: `id, title, process, mux, session, app, instance, x, y, width, height, maximized, moveMode, alwaysOnTop, focused, minimized, pid, panes`; `mux` (`ptmux`, `tmux` or `screen`) and `session` name the active pane's session, or are `null` for a shell; `app` and `instance` name the active pane's linuxserver app (`chromium`, `0`), or are `null`; `maximized` is the id of the pane filling the window, or `null`; `page` is the URL a web page pane is on, or `null`; `device` is the adb serial of the active pane's Android device, or `null`, `display` its new display (`"fit"`, `"1920x1080/240"`, …), or `null` for the device's screen, and `deviceApp` the package of the app on top of it, or `null` |
 | `POST /windows` | | Open a new terminal window; returns `{id}` (a UUID) |
 | `POST /windows/:id/move-mode` | `{"enabled": true\|false}` | Turn move mode on or off |
 | `POST /windows/:id/always-on-top` | `{"enabled": true\|false}` | Keep the window above everything (covering the panel) and hide it from the taskbar and Alt+Tab |
 | `POST /windows/:id/position` | `{"x": 0, "y": -200}` | Move the window; negative values and positions past the screen edge are allowed |
 | `POST /windows/:id/reset-position` | | Move the window to x=0, y=0 |
+| `POST /windows/:id/maximize` | `{"pane": "<pane id>"\|null}` | Fill the window with that pane (ids from `panes`) for now; `null` puts the panes back |
 | `POST /windows/:id/focus` | | Bring the window to the front and focus it |
 | `DELETE /windows/:id` (or `POST /windows/:id/close`) | | Close the window and end its shell |
 | `WS /events?token=…` | | Push channel: sends `{"type":"windows","windows":[…]}` whenever the window list changes |
@@ -101,6 +102,8 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/window
 ## Panes and sessions
 
 **Plan layout…** in the tray opens the planner, which shows every window and its panes. Split, close and resize panes there, or drag a pane onto another pane of the **same** window to swap them or put it on that side. Panes do not move between windows.
+
+To show one pane on its own for a while, **maximize** it: the card's **⛶** button, or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>Z</kbd> in the pane, which works in every kind of pane. It fills the window, and the other panes keep running at their size behind it (their cards are dimmed in the planner). The same button (now **⊡**) or key puts the panes back, and so do splitting or moving a pane and selecting another pane in the planner. Maximizing is not saved with the layout, so the window starts with all its panes.
 
 In a shell or session pane, select text with the mouse and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> to copy it to the clipboard. <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> pastes the clipboard into the pane.
 

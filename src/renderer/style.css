@@ -52,6 +52,10 @@ html, body {
 .split.row > * + * { border-left: 1px solid rgba(230, 230, 230, 0.18); }
 .split.col > * + * { border-top: 1px solid rgba(230, 230, 230, 0.18); }
 
+/* A maximized pane fills the window; the others stay laid out, hidden, under it. */
+#terminal.maximized .pane { visibility: hidden; }
+#terminal.maximized > .pane.max { visibility: visible; position: absolute; inset: 0; z-index: 1; border: 0; }
+
 /* An app pane is an empty slot in the tree; its UI sits over it in #apps,
    which the move overlay still covers. */
 .pane.web { padding: 0; }

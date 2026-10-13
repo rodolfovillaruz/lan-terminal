@@ -40,7 +40,8 @@ async function main() {
     // Inside the slot's border, which draws the line between panes.
     const place = () => {
       const r = el.getBoundingClientRect();
-      box.hidden = !el.isConnected || el.clientWidth === 0;
+      // Hidden too behind a maximized pane, which only the tree's classes tell.
+      box.hidden = !el.isConnected || el.clientWidth === 0 || (root.classList.contains('maximized') && !el.classList.contains('max'));
       Object.assign(box.style, {
         left: `${r.left + el.clientLeft}px`,
         top: `${r.top + el.clientTop}px`,
@@ -500,21 +501,31 @@ async function main() {
 
   // Rebuilds the split containers and moves the existing pane elements into them, so
   // reordering keeps each pane's xterm and scrollback.
-  const build = (node, seen, info) => {
+  const paneEl = (id, info) => {
+    const other = info[id]; // a web, page or device pane, which has no pty
+    const p = panes.get(id);
+    if (p && other) p.update(other);
+    if (p) return p.el;
+    if (other?.kind === 'scrcpy') return createScrcpyPane(id, other).el;
+    if (other?.kind === 'page') return createPagePane(id, other).el;
+    return (other ? createWebPane(id, other) : createPane(id)).el;
+  };
+  // The maximized pane goes in maxed.el, to be laid over the whole window, and an
+  // empty pane keeps its place, so the others keep their size.
+  const build = (node, seen, info, maxed) => {
     if (node.type === 'pane') {
       seen.add(node.id);
-      const other = info[node.id]; // a web, page or device pane, which has no pty
-      const p = panes.get(node.id);
-      if (p && other) p.update(other);
-      if (p) return p.el;
-      if (other?.kind === 'scrcpy') return createScrcpyPane(node.id, other).el;
-      if (other?.kind === 'page') return createPagePane(node.id, other).el;
-      return (other ? createWebPane(node.id, other) : createPane(node.id)).el;
+      const el = paneEl(node.id, info);
+      if (node.id !== maxed.id) return el;
+      maxed.el = el;
+      const spacer = document.createElement('div');
+      spacer.className = 'pane';
+      return spacer;
     }
     const box = document.createElement('div');
     box.className = `split ${node.dir}`;
     node.children.forEach((child, i) => {
-      const el = build(child, seen, info);
+      const el = build(child, seen, info, maxed);
       el.style.flex = `${node.sizes[i]} 1 0`;
       box.appendChild(el);
     });
@@ -528,11 +539,13 @@ async function main() {
   window.terminal.onPageReload((id) => panes.get(id)?.reload?.());
   window.terminal.onLayout((state) => {
     const seen = new Set();
+    const maxed = { id: state.maximized, el: null };
     // A locked window with no panes shows just its background.
     if (state.layout) {
-      const tree = build(state.layout, seen, state.panes || {});
+      const tree = build(state.layout, seen, state.panes || {}, maxed);
       tree.style.flex = '1 1 0';
       root.replaceChildren(tree);
+      if (maxed.el) root.append(maxed.el);
     } else {
       root.replaceChildren();
     }
@@ -541,6 +554,10 @@ async function main() {
       p.dispose();
       panes.delete(id);
     }
+    // A maximized pane covers the window; the others keep their size underneath, so
+    // their shells and displays are not resized there and back.
+    root.classList.toggle('maximized', Boolean(maxed.el));
+    for (const p of panes.values()) p.el.classList.toggle('max', p.el === maxed.el);
     for (const p of panes.values()) p.syncSize();
     const target = panes.get(state.active);
     if (target && (state.active !== active || !target.el.contains(document.activeElement))) {

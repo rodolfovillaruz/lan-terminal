@@ -64,8 +64,9 @@ class WindowManager extends EventEmitter {
   constructor(config) {
     super();
     this.config = config;
-    // id (UUID) -> { id, win, panes, layout, activePane, locked, moveMode, alwaysOnTop, ready }
+    // id (UUID) -> { id, win, panes, layout, activePane, maximized, locked, moveMode, alwaysOnTop, ready }
     // layout is null for a window with no panes, which only a locked window can be.
+    // maximized is the pane that fills the window for now, or null; it is not saved.
     // panes: paneId -> { id, kind, title, process, mux, session, app, instance, ... }
     //   kind 'term': { pty, ready, pending, exited } runs a shell or a multiplexer client;
     //     mux and session name the session it is attached to (see mux.js), or are null.
@@ -295,6 +296,7 @@ class WindowManager extends EventEmitter {
     plannerAction('planner:move', (id, paneId, targetId, zone) => this.movePane(id, paneId, targetId, zone));
     plannerAction('planner:resize', (id, splitPath, sizes) => this.resizeSplit(id, splitPath, sizes));
     plannerAction('planner:select', (id, paneId) => this.selectPane(id, paneId));
+    plannerAction('planner:maximize', (id, paneId) => this.maximizePane(id, paneId));
     plannerAction('planner:source', (id, paneId, source) => this.setPaneSource(id, paneId, source));
     plannerAction('planner:add-pane', (id, source) => this.addPane(id, source));
     plannerAction('planner:stop-app', (app, instance) => this.stopApp(app, instance));
@@ -367,7 +369,7 @@ class WindowManager extends EventEmitter {
       pages: this.#recentPages(),
       windows: [...this.terminals.values()]
         .filter((t) => !t.closed && !t.win.isDestroyed())
-        .map((t) => ({ id: t.id, focused: t.win.isFocused(), locked: t.locked, layout: t.layout, active: t.activePane, panes: this.#paneList(t) })),
+        .map((t) => ({ id: t.id, focused: t.win.isFocused(), locked: t.locked, layout: t.layout, active: t.activePane, maximized: t.maximized, panes: this.#paneList(t) })),
     };
   }
 
@@ -545,7 +547,7 @@ class WindowManager extends EventEmitter {
       if (p.kind === 'page') panes[p.id] = { kind: 'page', url: p.page };
       if (p.kind === 'scrcpy') panes[p.id] = { kind: 'scrcpy', status: p.status, fit: scrcpy.isFit(p.display), captureMouse: p.mirror?.capturesMouse ?? false };
     }
-    term.win.webContents.send('layout', { layout: term.layout, active: term.activePane, panes });
+    term.win.webContents.send('layout', { layout: term.layout, active: term.activePane, maximized: term.maximized, panes });
   }
 
   // Every pane edit lands here: the capture window and the planner redraw from the
@@ -867,6 +869,15 @@ class WindowManager extends EventEmitter {
   #setLayout(term, tree, active) {
     term.layout = tree;
     term.activePane = tree ? active : null;
+    if (!tree || !layout.leaves(tree).includes(term.maximized)) term.maximized = null;
+  }
+
+  // Ctrl+Shift+Alt+Z, in any pane, maximizes the active pane or puts it back.
+  #maximizeKey(term, input) {
+    if (input.type !== 'keyDown' || input.isAutoRepeat) return false;
+    if (!(input.control && input.shift && input.alt && !input.meta && input.code === 'KeyZ')) return false;
+    if (term.activePane) this.maximizePane(term.id, term.maximized ? null : term.activePane);
+    return true;
   }
 
   // saved is a pane shape; empty: true opens it with no panes (a locked window saved
@@ -916,6 +927,7 @@ class WindowManager extends EventEmitter {
       // Browser keys: F5 or Ctrl+R reloads (with Shift, past the cache), Alt+Left and
       // Alt+Right go back and forward.
       guest.on('before-input-event', (event, input) => {
+        if (this.#maximizeKey(term, input)) return event.preventDefault();
         if (input.type !== 'keyDown') return;
         const ctrl = input.control || input.meta;
         const nav = guest.navigationHistory;
@@ -933,7 +945,7 @@ class WindowManager extends EventEmitter {
       });
     });
 
-    const term = { id, win, panes: new Map(), layout: null, activePane: null, locked: Boolean(locked), moveMode: false, alwaysOnTop: false, ready: false };
+    const term = { id, win, panes: new Map(), layout: null, activePane: null, maximized: null, locked: Boolean(locked), moveMode: false, alwaysOnTop: false, ready: false };
     this.terminals.set(id, term);
     if (!(empty && term.locked)) {
       term.layout = saved
@@ -958,6 +970,10 @@ class WindowManager extends EventEmitter {
       if (!pane) return;
       pane.title = title.slice(tab + 1);
       this.#changed();
+    });
+    // Before the pane sees the key, so it works in app and page panes too.
+    win.webContents.on('before-input-event', (event, input) => {
+      if (this.#maximizeKey(term, input)) event.preventDefault();
     });
     win.on('focus', () => this.#changed());
     win.on('moved', () => this.#changed());
@@ -1019,6 +1035,7 @@ class WindowManager extends EventEmitter {
           width: b.width,
           height: b.height,
           locked: t.locked,
+          maximized: t.maximized,
           moveMode: t.moveMode,
           alwaysOnTop: t.alwaysOnTop,
           focused: t.win.isFocused(),
@@ -1083,6 +1100,7 @@ class WindowManager extends EventEmitter {
     // Out of the map first, so the old pty's exit does not remove the pane's place.
     term.panes.delete(paneId);
     this.#endPane(old);
+    if (term.maximized === paneId) term.maximized = newId;
     this.#setLayout(term, layout.replacePane(term.layout, paneId, newId), term.activePane === paneId ? newId : term.activePane);
     this.#pushLayout(term);
     return true;
@@ -1154,6 +1172,7 @@ class WindowManager extends EventEmitter {
       throw err;
     }
     term.activePane = newId;
+    term.maximized = null; // the new pane shows
     this.#pushLayout(term);
     return true;
   }
@@ -1181,6 +1200,7 @@ class WindowManager extends EventEmitter {
       ? layout.splitPane(layout.removePane(term.layout, paneId), targetId, place.dir, paneId, place.before)
       : layout.swapPanes(term.layout, paneId, targetId);
     term.activePane = paneId;
+    term.maximized = null;
     this.#pushLayout(term);
     return true;
   }
@@ -1197,7 +1217,22 @@ class WindowManager extends EventEmitter {
     const term = this.get(id);
     if (!term || !term.panes.has(paneId)) return false;
     term.activePane = paneId;
+    // A pane hidden behind the maximized one would get the keys out of sight.
+    if (term.maximized && term.maximized !== paneId) term.maximized = null;
     this.focus(id);
+    this.#sendLayout(term);
+    this.#changed();
+    return true;
+  }
+
+  // Fills the window with pane paneId for now, over the others, which keep running at
+  // their size; null puts the layout back. Not saved, and splitting or moving a pane,
+  // or selecting another, puts it back too.
+  maximizePane(id, paneId) {
+    const term = this.get(id);
+    if (!term || (paneId !== null && !term.panes.has(paneId))) return false;
+    term.maximized = paneId;
+    if (paneId) term.activePane = paneId;
     this.#sendLayout(term);
     this.#changed();
     return true;

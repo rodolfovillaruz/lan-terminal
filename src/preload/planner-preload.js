@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('planner', {
   move: (windowId, paneId, targetId, zone) => ipcRenderer.send('planner:move', windowId, paneId, targetId, zone),
   resize: (windowId, path, sizes) => ipcRenderer.send('planner:resize', windowId, path, sizes),
   select: (windowId, paneId) => ipcRenderer.send('planner:select', windowId, paneId),
+  // paneId null puts the window's panes back.
+  maximize: (windowId, paneId) => ipcRenderer.send('planner:maximize', windowId, paneId),
   // source: 'shell', '<mux>:new', '<mux>:<session>', 'ls:new:<app>:<tag>', 'ls:<app>:<instance>'
   // 'scrcpy:<adb serial>', 'scrcpy-display:<display>:<adb serial>',
   // 'scrcpy-app:<package>:<adb serial>' or 'page:<url>'
