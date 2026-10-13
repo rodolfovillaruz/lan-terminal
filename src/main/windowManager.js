@@ -47,16 +47,18 @@ const DROIDCAM_MODULE = '/sys/module/v4l2loopback_dc';
 // session, { app, instance, tag } for a linuxserver app (e.g. chromium 0), { device,
 // display } for an Android device (its adb serial): its screen, or with display a
 // new virtual display on it (see scrcpy.validDisplay), { page } for a web page
-// (its URL), { planner: true } for the layout planner, or { droidcam: true } for
-// DroidCam's camera. A saved pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g.
+// (its URL), { planner: true } for the layout planner, { droidcam: true } for
+// DroidCam's camera, or { container: name } for a container labelled
+// lan-terminal.pane=<name> (see linuxserver.js). A saved pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g.
 // { tmux: 'work' }), { linuxserver: app, name, tag }, { scrcpy: serial, display,
 // startApp }, where startApp is the app last opened on a new display, which opens
 // again when the display comes back, { page: url }, the page it was last on,
-// { planner: true } or { droidcam: true }.
+// { planner: true }, { droidcam: true } or { container: name }.
 // { webtop: name, tag } is the older form for a webtop.
 const leafSource = (s) => {
   if (s?.planner === true) return { planner: true };
   if (s?.droidcam === true) return { droidcam: true };
+  if (ls.validName(s?.container)) return { container: s.container };
   if (validPage(s?.page)) return { page: s.page };
   if (scrcpy.validSerial(s?.scrcpy)) {
     const display = scrcpy.validDisplay(s.display) ? s.display : null;
@@ -70,9 +72,10 @@ const leafSource = (s) => {
 };
 const isLeaf = (s) => s === 'pane' || leafSource(s) !== null;
 const paneLeaf = (p) =>
-  p.planner ? { planner: true } : p.droidcam ? { droidcam: true } : p.page ? { page: p.page } : p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
+  p.planner ? { planner: true } : p.droidcam ? { droidcam: true } : p.container ? { container: p.container } : p.page ? { page: p.page } : p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
 const sameSource = (p, source) =>
   Boolean(p.planner) === Boolean(source?.planner) && Boolean(p.droidcam) === Boolean(source?.droidcam) &&
+  (p.container ?? null) === (source?.container ?? null) &&
   (p.page ?? null) === (source?.page ?? null) &&
   (p.device ?? null) === (source?.device ?? null) && (p.display ?? null) === (source?.display ?? null) &&
   p.app === (source?.app ?? null) && p.instance === (source?.instance ?? null) &&
@@ -90,6 +93,8 @@ class WindowManager extends EventEmitter {
     //     mux and session name the session it is attached to (see mux.js), or are null.
     //   kind 'web': { app, instance, tag, url, error } shows a linuxserver app, e.g.
     //     webtop or chromium (see linuxserver.js); url is null until it answers.
+    //     With container instead of app, instance and tag, it shows the container
+    //     labelled lan-terminal.pane=<container>, which something else runs.
     //   kind 'scrcpy': { device, display, model, mirror, status, video, fitSize } shows
     //     an Android device's screen or a new display on it (see scrcpy.js); the
     //     window decodes the stream. fitSize is the pane's size in pixels, which a
@@ -108,7 +113,8 @@ class WindowManager extends EventEmitter {
     this.muxes = new Map(mux.NAMES.map((m) => [m, mux.find(m, config[m])]).filter(([, bin]) => bin));
     this.sessions = new Map(); // mux -> Map(session name -> target), as last listed
     this.docker = mux.find('docker', config.docker);
-    this.apps = { images: [], containers: [] }; // linuxserver apps as last listed
+    // linuxserver apps as last listed, and the containers labelled lan-terminal.pane.
+    this.apps = { images: [], containers: [], labelled: [] };
     this.adb = scrcpy.findAdb(config.adb);
     this.devices = []; // Android devices as last listed: [{ serial, model }]
     this.scrcpyTools = null; // the installed scrcpy's { version, server }, once found
@@ -387,7 +393,7 @@ class WindowManager extends EventEmitter {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
       const deviceApp = p.foreground ? { package: p.foreground, name: this.#appName(p.device, p.foreground) } : null;
-      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, page: p.page ?? null, planner: Boolean(p.planner), droidcam: Boolean(p.droidcam), device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, deviceApp, model: p.model ?? null, pid: p.pty?.pid ?? null };
+      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, container: p.container ?? null, page: p.page ?? null, planner: Boolean(p.planner), droidcam: Boolean(p.droidcam), device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, deviceApp, model: p.model ?? null, pid: p.pty?.pid ?? null };
     });
   }
 
@@ -584,7 +590,7 @@ class WindowManager extends EventEmitter {
     // Web panes have no pty to describe them, so the renderer gets what to show.
     const panes = {};
     for (const p of term.panes.values()) {
-      if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: `${p.app} ${p.instance} (${p.tag})` };
+      if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: p.container ?? `${p.app} ${p.instance} (${p.tag})` };
       if (p.kind === 'page') panes[p.id] = { kind: 'page', url: p.page };
       if (p.kind === 'planner') panes[p.id] = { kind: 'planner', url: PLANNER_PANE_URL };
       if (p.kind === 'camera') panes[p.id] = { kind: 'camera', name: 'Droidcam', label: 'DroidCam' };
@@ -654,20 +660,21 @@ class WindowManager extends EventEmitter {
 
   // An app pane shows a placeholder while the container starts (or is reused), then
   // the app's UI. Closing the pane leaves the container running.
-  #spawnWebPane(term, { app, instance, tag }) {
+  // A labelled container ({ container }) is started if need be, the same way.
+  #spawnWebPane(term, { app = null, instance = null, tag = null, container = null }) {
     const id = crypto.randomUUID();
-    const pane = { id, kind: 'web', app, instance, tag, url: null, error: null, mux: null, session: null, title: app, process: app, exited: false };
+    const name = container ?? app;
+    const pane = { id, kind: 'web', app, instance, tag, container, url: null, error: null, mux: null, session: null, title: name, process: name, exited: false };
     term.panes.set(id, pane);
     if (!this.docker) {
       pane.error = 'docker is not installed';
       return id;
     }
-    ls
-      .ensure(this.docker, app, instance, tag)
+    (container ? ls.ensureLabelled(this.docker, container) : ls.ensure(this.docker, app, instance, tag))
       .then((url) => { pane.url = url; })
       .catch((err) => {
         pane.error = err.message;
-        console.warn(`${app} ${instance}:`, err.message);
+        console.warn(`${container ?? `${app} ${instance}`}:`, err.message);
       })
       .finally(() => {
         if (term.panes.get(id) !== pane) return;
@@ -800,7 +807,7 @@ class WindowManager extends EventEmitter {
     if (source?.droidcam) return this.#spawnCameraPane(term);
     if (source?.page) return this.#spawnPagePane(term, source);
     if (source?.device) return this.#spawnScrcpyPane(term, source);
-    return source?.app ? this.#spawnWebPane(term, source) : this.#spawnPane(term, source);
+    return source?.app || source?.container ? this.#spawnWebPane(term, source) : this.#spawnPane(term, source);
   }
 
   // A shell's pty is killed, and its exit removes the pane. A multiplexer client
@@ -815,13 +822,14 @@ class WindowManager extends EventEmitter {
   // Lists every installed multiplexer's sessions, the linuxserver apps and the
   // Android devices. The planner shows them in each pane's menu.
   async refreshSessions() {
-    const [lists, images, containers, devices] = await Promise.all([
+    const [lists, images, containers, labelled, devices] = await Promise.all([
       Promise.all([...this.muxes].map(async ([m, bin]) => [m, await mux.list(m, bin)])),
       this.docker ? ls.images(this.docker) : [],
       this.docker ? ls.list(this.docker) : [],
+      this.docker ? ls.labelled(this.docker) : [],
       this.adb ? scrcpy.devices(this.adb) : [],
     ]);
-    const next = { sessions: new Map(lists), apps: { images, containers }, devices };
+    const next = { sessions: new Map(lists), apps: { images, containers, labelled }, devices };
     const key = ({ sessions, apps, devices }) => JSON.stringify([[...sessions].map(([m, names]) => [m, [...names]]), apps, devices]);
     if (key(next) === key(this)) return;
     this.sessions = next.sessions;
@@ -831,7 +839,8 @@ class WindowManager extends EventEmitter {
   }
 
   // A planner menu choice: 'shell', '<mux>:new', '<mux>:<name>' (e.g. 'tmux:work'),
-  // 'ls:new:<app>:<tag>' (e.g. 'ls:new:chromium:latest'), 'ls:<app>:<instance>' or
+  // 'ls:new:<app>:<tag>' (e.g. 'ls:new:chromium:latest'), 'ls:<app>:<instance>',
+  // 'container:<name>' (a container labelled lan-terminal.pane=<name>) or
   // 'scrcpy:<adb serial>', 'scrcpy-display:<display>:<adb serial>' (a new display,
   // see scrcpy.validDisplay), 'scrcpy-app:<package>:<adb serial>' (an app moving from
   // the pane it is on), 'page:<url>' (a web page), 'planner' (the layout planner) or
@@ -851,6 +860,12 @@ class WindowManager extends EventEmitter {
       return { page };
     }
     if (typeof source === 'string' && source.startsWith('ls:')) return this.#resolveApp(source.slice(3).split(':'));
+    if (typeof source === 'string' && source.startsWith('container:')) {
+      if (!this.docker) throw new Error('docker is not installed');
+      const container = source.slice(10);
+      if (!ls.validName(container)) throw new Error('bad container name');
+      return { container };
+    }
     // An app that has been on a device pane, moving to this pane: 'scrcpy-app:<package>:<serial>'.
     if (typeof source === 'string' && source.startsWith('scrcpy-app:')) {
       const rest = source.slice(11);
@@ -1104,6 +1119,7 @@ class WindowManager extends EventEmitter {
           session: active?.session ?? null,
           app: active?.app ?? null,
           instance: active?.instance ?? null,
+          container: active?.container ?? null,
           page: active?.page ?? null,
           device: active?.device ?? null,
           display: active?.display ?? null,

@@ -78,7 +78,7 @@ Send `Authorization: Bearer <token>` on every request. You can also put `?token=
 
 | Method & path | Body | Action |
 |---|---|---|
-| `GET /windows` | | List windows: `id, title, process, mux, session, app, instance, x, y, width, height, maximized, moveMode, alwaysOnTop, focused, minimized, pid, panes`; `mux` (`ptmux`, `tmux` or `screen`) and `session` name the active pane's session, or are `null` for a shell; `app` and `instance` name the active pane's linuxserver app (`chromium`, `0`), or are `null`; `maximized` is the id of the pane filling the window, or `null`; `page` is the URL a web page pane is on, or `null`; `device` is the adb serial of the active pane's Android device, or `null`, `display` its new display (`"fit"`, `"1920x1080/240"`, …), or `null` for the device's screen, and `deviceApp` the package of the app on top of it, or `null` |
+| `GET /windows` | | List windows: `id, title, process, mux, session, app, instance, x, y, width, height, maximized, moveMode, alwaysOnTop, focused, minimized, pid, panes`; `mux` (`ptmux`, `tmux` or `screen`) and `session` name the active pane's session, or are `null` for a shell; `app` and `instance` name the active pane's linuxserver app (`chromium`, `0`), or are `null`; `container` is the label name of the labelled container it shows, or `null`; `maximized` is the id of the pane filling the window, or `null`; `page` is the URL a web page pane is on, or `null`; `device` is the adb serial of the active pane's Android device, or `null`, `display` its new display (`"fit"`, `"1920x1080/240"`, …), or `null` for the device's screen, and `deviceApp` the package of the app on top of it, or `null` |
 | `POST /windows` | | Open a new terminal window; returns `{id}` (a UUID) |
 | `POST /windows/:id/move-mode` | `{"enabled": true\|false}` | Turn move mode on or off |
 | `POST /windows/:id/always-on-top` | `{"enabled": true\|false}` | Keep the window above everything (covering the panel) and hide it from the taskbar and Alt+Tab |
@@ -114,6 +114,17 @@ The menu also offers **linuxserver apps**: [linuxserver.io](https://docs.linuxse
 ```sh
 docker rm -f lan-terminal-chromium-0 && docker volume rm lan-terminal-chromium-0
 ```
+
+The linuxserver group also lists containers that something else runs, such as a docker compose service, by the name in their `lan-terminal.pane` label. To show one, give it the label and publish its port 3000 on localhost:
+
+```yaml
+    labels:
+      - lan-terminal.pane=chromium-debug
+    ports:
+      - 127.0.0.1:3010:3000
+```
+
+Its pane shows the UI like an app's, and picking it starts the container if it is stopped. The app never stops, recreates or removes it, so its pane has no **■** button: compose (or whatever runs it) owns it. It is saved with the layout by its label, so it survives the container being recreated.
 
 Each running app holds from several hundred MB (one app) to a few GB (a desktop) of memory, so stop the ones you aren't using.
 

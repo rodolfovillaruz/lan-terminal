@@ -214,6 +214,7 @@ function paneName(info) {
     return `${info.model ?? info.device}${display}${info.deviceApp ? ` · ${info.deviceApp.name}` : ''}`;
   }
   if (info.app) return `${info.app} ${info.instance}`;
+  if (info.container) return info.container;
   return info.session ? `${info.mux} ${info.session}` : info.process;
 }
 
@@ -225,6 +226,7 @@ function paneSource(info) {
   if (info.device && info.deviceApp) return appSource(info.device, info.deviceApp.package);
   if (info.device) return deviceSource(info.device, info.display);
   if (info.app) return `ls:${info.app}:${info.instance}`;
+  if (info.container) return `container:${info.container}`;
   return info.session ? `${info.mux}:${info.session}` : 'shell';
 }
 
@@ -404,6 +406,12 @@ function fillSourceMenu(select, current, st) {
       running.set(current, { app, name, running: true });
     }
     for (const [value, c] of running) option(group, value, `${c.app} ${c.name}${c.running ? '' : ' (stopped)'}`);
+    // Containers something else runs, labelled lan-terminal.pane, and the pane's own.
+    const labelled = new Map((st.linuxserver.labelled ?? []).map((c) => [`container:${c.name}`, c]));
+    if (current?.startsWith('container:') && !labelled.has(current)) labelled.set(current, { name: current.slice(10), running: true });
+    for (const [value, c] of labelled) {
+      option(group, value, `${c.name}${c.running ? '' : ' (stopped)'}`).title = `${c.container ?? c.name}, labelled lan-terminal.pane (run outside the app)`;
+    }
     for (const { app, tag } of st.linuxserver.images) {
       option(group, `ls:new:${app}:${tag}`, tag === 'latest' ? `New ${app}` : `New ${app} (${tag})`);
     }
@@ -701,7 +709,7 @@ function paneBox(win, id) {
     }, 'close');
   }
   // Only a locked window may lose its last pane; any other window would close.
-  const closeTip = info.app ? `Close pane (${info.app} keeps running)` : info.session ? 'Close pane (the session keeps running)'
+  const closeTip = info.app || info.container ? `Close pane (${info.app ?? info.container} keeps running)` : info.session ? 'Close pane (the session keeps running)'
     : info.device && info.display !== null ? 'Close pane and its new display' : 'Close pane';
   button(tools, '✕', closeTip, () => window.planner.close(win.id, id), 'close').disabled =
     win.panes.length === 1 && !win.locked;

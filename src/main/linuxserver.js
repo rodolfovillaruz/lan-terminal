@@ -5,6 +5,10 @@
 //
 // An instance is (app, name): the container and its /config volume are both
 // lan-terminal-<app>-<name>, e.g. lan-terminal-chromium-0.
+//
+// A container that something else runs, such as docker compose, can be shown too: it
+// carries the label lan-terminal.pane=<name> and publishes port 3000 on the host. The
+// app starts it when it is stopped, and never creates, stops or removes it.
 
 const { execFile } = require('child_process');
 const http = require('http');
@@ -13,6 +17,7 @@ const os = require('os');
 const REGISTRY = 'lscr.io/linuxserver/';
 const PORT = '3000/tcp'; // the desktop UI in linuxserver's Selkies and KasmVNC images
 const IMAGE_LABEL = 'lan-terminal.image';
+const PANE_LABEL = 'lan-terminal.pane';
 
 // Names become container and volume names, so Docker's rules apply.
 const validName = (name) => typeof name === 'string' && /^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(name);
@@ -76,6 +81,24 @@ async function list(bin) {
   return parseList(out);
 }
 
+// "container\tstate\tlabel" lines -> [{ name, container, running }], one per
+// name (the first container that carries it), sorted by name.
+function parseLabelled(out) {
+  const found = new Map();
+  for (const line of parseLines(out)) {
+    const [cname, state, name] = line.split('\t');
+    if (validName(name) && !found.has(name)) found.set(name, { name, container: cname, running: state === 'running' });
+  }
+  return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Containers labelled lan-terminal.pane, running or stopped.
+async function labelled(bin) {
+  const format = `{{.Names}}\t{{.State}}\t{{.Label "${PANE_LABEL}"}}`;
+  const out = await docker(bin, ['ps', '-a', '--filter', `label=${PANE_LABEL}`, '--format', format]).catch(() => '');
+  return parseLabelled(out);
+}
+
 // Arguments for a new container. The app runs as the host user, as the linuxserver
 // images expect, and listens only on a localhost port that Docker picks.
 function runArgs(app, name, tag) {
@@ -126,12 +149,27 @@ async function ensure(bin, app, name, tag) {
   } else if (!existing.running) {
     await docker(bin, ['start', container(app, name)], 60000);
   }
+  return uiUrl(bin, container(app, name));
+}
+
+// The URL of a running container's UI, once it answers.
+async function uiUrl(bin, cname, hint = '') {
   // "127.0.0.1:49153", one line per published address.
-  const port = parseLines(await docker(bin, ['port', container(app, name), PORT]))[0]?.split(':').pop();
-  if (!port) throw new Error('the container publishes no UI port');
+  const port = parseLines(await docker(bin, ['port', cname, PORT]).catch(() => ''))[0]?.split(':').pop();
+  if (!port) throw new Error(`the container publishes no UI port${hint}`);
   const url = `http://127.0.0.1:${port}/`;
   await waitForHttp(url, 90000);
   return url;
+}
+
+// Starts the container labelled lan-terminal.pane=<name> if it is stopped, and
+// returns the URL of its UI.
+async function ensureLabelled(bin, name) {
+  if (!validName(name)) throw new Error(`bad container name: ${name}`);
+  const found = (await labelled(bin)).find((c) => c.name === name);
+  if (!found) throw new Error(`no container is labelled ${PANE_LABEL}=${name}`);
+  if (!found.running) await docker(bin, ['start', found.container], 60000);
+  return uiUrl(bin, found.container, ` (publish port 3000, e.g. "127.0.0.1:3010:3000")`);
 }
 
 // Stops the container; it and its volume stay, so picking it again starts it.
@@ -140,4 +178,4 @@ function stop(bin, app, name) {
   return docker(bin, ['stop', container(app, name)], 60000);
 }
 
-module.exports = { validName, validApp, validTag, container, parseImage, parseList, images, list, runArgs, ensure, stop };
+module.exports = { validName, validApp, validTag, container, parseImage, parseList, parseLabelled, images, list, labelled, runArgs, ensure, ensureLabelled, stop };
