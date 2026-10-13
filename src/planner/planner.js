@@ -12,6 +12,10 @@ let typing = false; // a pane's URL box is open; a redraw would close it
 let picking = false; // the dialog that chooses the apps Open app… offers is open
 let pending = null; // state that arrived during a drag or a menu choice, drawn after it
 
+// Shown in a capture window's pane (see the planner pane in windowManager.js) rather
+// than in its own window.
+const IN_PANE = new URLSearchParams(location.search).has('pane');
+
 const EDGE = 0.25; // share of a pane's width or height that counts as its edge
 
 document.getElementById('new-window').addEventListener('click', () => window.planner.newWindow());
@@ -55,7 +59,9 @@ function button(parent, label, title, onClick, cls = '') {
 }
 
 // A divider between children i and i+1 of a split. onResize gets the new sizes,
-// at most once per frame, so the capture window follows the drag live.
+// at most once per frame, so the capture window follows the drag live. In a pane it
+// gets them once, on release: resizing live would move the pane, and so the planner
+// and the gutter, under the pointer.
 function gutter(box, node, i, onResize) {
   const g = document.createElement('div');
   g.className = 'gutter';
@@ -85,12 +91,15 @@ function gutter(box, node, i, onResize) {
     sizes[i + 1] = pair - a;
     drag.items[i].style.flex = `${sizes[i]} 1 0`;
     drag.items[i + 1].style.flex = `${sizes[i + 1]} 1 0`;
+    drag.next = sizes;
+    if (IN_PANE) return;
     cancelAnimationFrame(drag.frame);
     drag.frame = requestAnimationFrame(() => onResize(sizes));
   });
   const end = () => {
     if (!drag || drag.g !== g) return;
     g.classList.remove('dragging');
+    if (IN_PANE && drag.next) onResize(drag.next);
     drag = null;
     flush();
   };

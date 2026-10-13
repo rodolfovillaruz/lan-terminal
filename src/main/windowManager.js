@@ -34,6 +34,7 @@ const validPage = (url) => {
 // The planner, in its own window or in a pane (a webview in the planner partition).
 const PLANNER_PAGE = path.join(__dirname, '..', 'planner', 'planner.html');
 const PLANNER_URL = pathToFileURL(PLANNER_PAGE).href;
+const PLANNER_PANE_URL = `${PLANNER_URL}?pane`; // tells the page it is in a pane
 const PLANNER_PRELOAD = path.join(__dirname, '..', 'preload', 'planner-preload.js');
 const PLANNER_PARTITION = 'planner';
 
@@ -569,7 +570,7 @@ class WindowManager extends EventEmitter {
     for (const p of term.panes.values()) {
       if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: `${p.app} ${p.instance} (${p.tag})` };
       if (p.kind === 'page') panes[p.id] = { kind: 'page', url: p.page };
-      if (p.kind === 'planner') panes[p.id] = { kind: 'planner', url: PLANNER_URL };
+      if (p.kind === 'planner') panes[p.id] = { kind: 'planner', url: PLANNER_PANE_URL };
       if (p.kind === 'scrcpy') panes[p.id] = { kind: 'scrcpy', status: p.status, fit: scrcpy.isFit(p.display), captureMouse: p.mirror?.capturesMouse ?? false };
     }
     term.win.webContents.send('layout', { layout: term.layout, active: term.activePane, maximized: term.maximized, panes });
@@ -952,7 +953,7 @@ class WindowManager extends EventEmitter {
     win.webContents.on('will-attach-webview', (event, prefs, params) => {
       delete prefs.preload;
       Object.assign(prefs, { nodeIntegration: false, nodeIntegrationInSubFrames: false, contextIsolation: true, sandbox: true });
-      if (params.src === PLANNER_URL && params.partition === PLANNER_PARTITION) prefs.preload = PLANNER_PRELOAD;
+      if (params.src === PLANNER_PANE_URL && params.partition === PLANNER_PARTITION) prefs.preload = PLANNER_PRELOAD;
       else if (!validPage(params.src) || params.partition !== 'persist:pages') event.preventDefault();
     });
     win.webContents.on('did-attach-webview', (_event, guest) => {
