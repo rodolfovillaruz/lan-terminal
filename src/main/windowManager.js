@@ -986,11 +986,18 @@ class WindowManager extends EventEmitter {
     if (!tree || !layout.leaves(tree).includes(term.maximized)) term.maximized = null;
   }
 
-  // Ctrl+Shift+Alt+Z, in any pane, maximizes the active pane or puts it back.
-  #maximizeKey(term, input) {
+  // In any pane, Ctrl+Shift+Alt+Z maximizes the active pane or puts it back, and
+  // Ctrl+Shift+Alt+F turns always on top on or off.
+  #windowKey(term, input) {
     if (input.type !== 'keyDown' || input.isAutoRepeat) return false;
-    if (!(input.control && input.shift && input.alt && !input.meta && input.code === 'KeyZ')) return false;
-    if (term.activePane) this.maximizePane(term.id, term.maximized ? null : term.activePane);
+    if (!(input.control && input.shift && input.alt && !input.meta)) return false;
+    if (input.code === 'KeyZ') {
+      if (term.activePane) this.maximizePane(term.id, term.maximized ? null : term.activePane);
+    } else if (input.code === 'KeyF') {
+      this.setAlwaysOnTop(term.id, !term.alwaysOnTop);
+    } else {
+      return false;
+    }
     return true;
   }
 
@@ -1040,7 +1047,7 @@ class WindowManager extends EventEmitter {
         guest.setWindowOpenHandler(() => ({ action: 'deny' }));
         guest.on('will-navigate', (event) => event.preventDefault());
         guest.on('before-input-event', (event, input) => {
-          if (this.#maximizeKey(term, input)) event.preventDefault();
+          if (this.#windowKey(term, input)) event.preventDefault();
         });
         this.panePlanners.add(guest);
         guest.once('destroyed', () => this.panePlanners.delete(guest));
@@ -1055,7 +1062,7 @@ class WindowManager extends EventEmitter {
       // Browser keys: F5 or Ctrl+R reloads (with Shift, past the cache), Alt+Left and
       // Alt+Right go back and forward.
       guest.on('before-input-event', (event, input) => {
-        if (this.#maximizeKey(term, input)) return event.preventDefault();
+        if (this.#windowKey(term, input)) return event.preventDefault();
         if (input.type !== 'keyDown') return;
         const ctrl = input.control || input.meta;
         const nav = guest.navigationHistory;
@@ -1101,7 +1108,7 @@ class WindowManager extends EventEmitter {
     });
     // Before the pane sees the key, so it works in app and page panes too.
     win.webContents.on('before-input-event', (event, input) => {
-      if (this.#maximizeKey(term, input)) event.preventDefault();
+      if (this.#windowKey(term, input)) event.preventDefault();
     });
     win.on('focus', () => this.#changed());
     win.on('moved', () => this.#changed());

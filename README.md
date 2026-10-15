@@ -105,6 +105,8 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" http://192.168.1.10:8765/window
 
 To show one pane on its own for a while, **maximize** it: the card's **⛶** button, or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>Z</kbd> in the pane, which works in every kind of pane. It fills the window, and the other panes keep running at their size behind it (their cards are dimmed in the planner). The same button (now **⊡**) or key puts the panes back, and so do splitting or moving a pane and selecting another pane in the planner. Maximizing is not saved with the layout, so the window starts with all its panes.
 
+<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>, in any pane, keeps the window **always on top** (above everything, covering the panel, and out of the taskbar and Alt+Tab) or stops it, like `POST /windows/:id/always-on-top`.
+
 In a shell or session pane, select text with the mouse and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> to copy it to the clipboard. <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> pastes the clipboard into the pane.
 
 Each pane has a menu that picks what it shows: a **Shell**, or a session of [ptmux](../pseudo-terminal), tmux or GNU screen, either one that is running or a new one (named with the next free number). A session pane runs the multiplexer's client (`ptmux attach`, `tmux new-session -A`, `screen -x`), so closing the pane, switching it to something else, or detaching inside it only detaches: the session keeps running, and any pane in any window can pick it up again. Sessions are saved with the layout. On the next start their panes reattach, and a session that no longer exists (after a reboot, say) starts again under the same name. The menu lists only the multiplexers the app can find.
