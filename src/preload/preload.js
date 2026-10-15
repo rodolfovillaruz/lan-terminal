@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld('terminal', {
   // Web page panes: where the page went, and reloads asked for from the planner.
   pageState: (paneId, url, title) => ipcRenderer.send('page:state', paneId, url, title),
   onPageReload: (cb) => ipcRenderer.on('page:reload', (_e, paneId) => cb(paneId)),
+  // Camera panes: fitting a pane's height to its video resizes the split above it.
+  onCameraFitHeight: (cb) => ipcRenderer.on('camera:fit-height', (_e, paneId) => cb(paneId)),
+  resizeSplit: (splitPath, sizes) => ipcRenderer.send('pane:resize-split', splitPath, sizes),
   copy: (text) => ipcRenderer.send('clipboard:write', text),
   paste: () => ipcRenderer.invoke('clipboard:read'),
   // Android device panes: the video stream in, touch and key events out.

@@ -164,7 +164,8 @@ async function main() {
   // found by its name. A camera that is not there, or that cannot be opened or stops,
   // says so and is tried again every few seconds. A loopback device opens even when
   // nothing feeds it, and then sends no frames, so the pane also says when none have
-  // come for a while, and clears that once they do.
+  // come for a while, and clears that once they do. With fillWidth the video spans the
+  // pane's width and its top and bottom are cropped, instead of showing whole.
   const createCameraPane = (id, info) => {
     const { el, box, place } = layerSlot();
     box.classList.add('camera');
@@ -223,9 +224,14 @@ async function main() {
     status.textContent = `Opening ${info.label}…`;
     connect();
 
+    const update = (next) => box.classList.toggle('fill-width', Boolean(next.fillWidth));
+    update(info);
+
     const p = {
       el,
-      update: () => {},
+      update,
+      // The pane's height that shows the whole video at the pane's width, once it has come.
+      videoHeight: () => (video.videoWidth ? (el.clientWidth * video.videoHeight) / video.videoWidth : null),
       syncSize: place,
       focus: () => {},
       dispose: () => {
@@ -633,6 +639,42 @@ async function main() {
     return box;
   };
 
+  // Makes a pane height pixels tall by resizing the nearest stacking split above it, the
+  // others in that split sharing what is left. Only side-by-side splits come between
+  // the two, so the pane grows as much as the split's child that holds it.
+  let drawn = null; // the layout last drawn
+  const fitHeight = (id, height) => {
+    const p = panes.get(id);
+    if (!drawn || !p?.el.isConnected || root.classList.contains('maximized')) return;
+    // The path to the nearest 'col' split holding the pane, and the child it is in.
+    const find = (node, path) => {
+      if (node.type === 'pane') return node.id === id ? { split: null } : null;
+      for (const [i, child] of node.children.entries()) {
+        const found = find(child, [...path, i]);
+        if (!found) continue;
+        return found.split || node.dir !== 'col' ? found : { split: path, index: i };
+      }
+      return null;
+    };
+    const found = find(drawn, []);
+    if (!found?.split) return;
+    // The split's box, and its children as drawn.
+    let child = p.el;
+    while (child.parentElement && !child.parentElement.classList.contains('col')) child = child.parentElement;
+    const items = [...child.parentElement.children];
+    if (items.indexOf(child) !== found.index) return;
+    const heights = items.map((c) => c.getBoundingClientRect().height);
+    const total = heights.reduce((a, h) => a + h, 0);
+    const rest = total - heights[found.index];
+    const want = Math.min(total, Math.max(0, heights[found.index] + height - p.el.clientHeight));
+    const sizes = heights.map((h, i) => (i === found.index ? want : rest > 0 ? (h * (total - want)) / rest : 0) / total);
+    window.terminal.resizeSplit(found.split, sizes);
+  };
+  window.terminal.onCameraFitHeight((id) => {
+    const height = panes.get(id)?.videoHeight?.();
+    if (height) fitHeight(id, height);
+  });
+
   window.terminal.onData((id, data) => panes.get(id)?.term?.write(data));
   window.terminal.onScrcpySession((id, video) => panes.get(id)?.session?.(video));
   window.terminal.onScrcpyPacket((id, packet) => panes.get(id)?.packet?.(packet));
@@ -642,6 +684,7 @@ async function main() {
     const seen = new Set();
     const maxed = { id: state.maximized, el: null };
     // A locked window with no panes shows just its background.
+    drawn = state.layout;
     if (state.layout) {
       const tree = build(state.layout, seen, state.panes || {}, maxed);
       tree.style.flex = '1 1 0';

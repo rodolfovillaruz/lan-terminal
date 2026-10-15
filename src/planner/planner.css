@@ -137,7 +137,7 @@ main {
 .pane.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .pane.dragging { opacity: 0.4; }
 .pane.covered { opacity: 0.45; }
-.pane .tools button.max[aria-pressed='true'] { color: var(--accent); }
+.pane .tools button.max[aria-pressed='true'], .pane .tools button.toggle[aria-pressed='true'] { color: var(--accent); }
 
 /* Where a dragged pane will land: the highlighted half, or the whole pane to swap. */
 .pane .zone {

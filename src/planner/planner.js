@@ -669,6 +669,12 @@ function chooseApps() {
   show(phone.value);
 }
 
+// A pane stacked above or below another, so its height can change.
+function inStack(node, id, stacked = false) {
+  if (node.type === 'pane') return stacked && node.id === id;
+  return node.children.some((c) => inStack(c, id, stacked || node.dir === 'col'));
+}
+
 function paneBox(win, id) {
   const info = win.panes.find((p) => p.id === id);
   const el = document.createElement('div');
@@ -700,6 +706,23 @@ function paneBox(win, id) {
   max.setAttribute('aria-pressed', String(maxed));
   max.disabled = win.panes.length === 1 && !maxed;
   if (info.page) button(tools, '↻', 'Reload the page', () => window.planner.reloadPage(win.id, id));
+  // A camera beside other panes: its video spanning the pane's width, and the pane's
+  // height fitted to the video, so the width set by hand shows the whole picture.
+  if (info.droidcam && win.panes.length > 1) {
+    const fill = button(
+      tools,
+      '⇔',
+      info.fillWidth
+        ? 'The video spans the pane\'s width, its top and bottom cropped. Click to show it whole.'
+        : 'Span the video across the pane\'s width, cropping its top and bottom',
+      () => window.planner.cameraFillWidth(win.id, id, !info.fillWidth),
+      'toggle',
+    );
+    fill.setAttribute('aria-pressed', String(info.fillWidth));
+    const fit = button(tools, '↕', "Fit the pane's height to the video at the pane's width", () => window.planner.cameraFitHeight(win.id, id));
+    fit.disabled = Boolean(win.maximized) || !inStack(win.layout, id);
+    if (fit.disabled) fit.title = win.maximized ? 'Put the panes back to fit the height' : 'Split the window down to give this pane a height to fit';
+  }
   if (info.app) {
     const name = paneName(info);
     button(tools, '■', `Stop ${name} (its files stay in its volume)`, () => {

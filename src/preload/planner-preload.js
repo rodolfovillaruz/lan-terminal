@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('planner', {
   addPane: (windowId, source) => ipcRenderer.send('planner:add-pane', windowId, source),
   stopApp: (app, instance) => ipcRenderer.send('planner:stop-app', app, instance),
   reloadPage: (windowId, paneId) => ipcRenderer.send('planner:reload-page', windowId, paneId),
+  // A camera pane: its video spanning the pane's width, and its height fitted to the video.
+  cameraFillWidth: (windowId, paneId, on) => ipcRenderer.send('planner:camera-fill-width', windowId, paneId, on),
+  cameraFitHeight: (windowId, paneId) => ipcRenderer.send('planner:camera-fit-height', windowId, paneId),
   // An Android device's apps ([{ name, package, system }]), and opening one in a device pane.
   deviceApps: (serial) => ipcRenderer.invoke('planner:device-apps', serial),
   openApp: (windowId, paneId, pkg) => ipcRenderer.send('planner:open-app', windowId, paneId, pkg),

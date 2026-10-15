@@ -47,17 +47,18 @@ const DROIDCAM_MODULE = '/sys/module/v4l2loopback_dc';
 // session, { app, instance, tag } for a linuxserver app (e.g. chromium 0), { device,
 // display } for an Android device (its adb serial): its screen, or with display a
 // new virtual display on it (see scrcpy.validDisplay), { page } for a web page
-// (its URL), { planner: true } for the layout planner, { droidcam: true } for
-// DroidCam's camera, or { container: name } for a container labelled
+// (its URL), { planner: true } for the layout planner, { droidcam: true, fillWidth }
+// for DroidCam's camera (fillWidth: its video spans the pane's width, see
+// setCameraFillWidth), or { container: name } for a container labelled
 // lan-terminal.pane=<name> (see linuxserver.js). A saved pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g.
 // { tmux: 'work' }), { linuxserver: app, name, tag }, { scrcpy: serial, display,
 // startApp }, where startApp is the app last opened on a new display, which opens
 // again when the display comes back, { page: url }, the page it was last on,
-// { planner: true }, { droidcam: true } or { container: name }.
+// { planner: true }, { droidcam: true, fillWidth } or { container: name }.
 // { webtop: name, tag } is the older form for a webtop.
 const leafSource = (s) => {
   if (s?.planner === true) return { planner: true };
-  if (s?.droidcam === true) return { droidcam: true };
+  if (s?.droidcam === true) return { droidcam: true, fillWidth: s.fillWidth === true };
   if (ls.validName(s?.container)) return { container: s.container };
   if (validPage(s?.page)) return { page: s.page };
   if (scrcpy.validSerial(s?.scrcpy)) {
@@ -72,7 +73,7 @@ const leafSource = (s) => {
 };
 const isLeaf = (s) => s === 'pane' || leafSource(s) !== null;
 const paneLeaf = (p) =>
-  p.planner ? { planner: true } : p.droidcam ? { droidcam: true } : p.container ? { container: p.container } : p.page ? { page: p.page } : p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
+  p.planner ? { planner: true } : p.droidcam ? { droidcam: true, ...(p.fillWidth && { fillWidth: true }) } : p.container ? { container: p.container } : p.page ? { page: p.page } : p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
 const sameSource = (p, source) =>
   Boolean(p.planner) === Boolean(source?.planner) && Boolean(p.droidcam) === Boolean(source?.droidcam) &&
   (p.container ?? null) === (source?.container ?? null) &&
@@ -264,6 +265,17 @@ class WindowManager extends EventEmitter {
       }
       if (changed) this.#changed();
     });
+    // A camera pane's height, fitted to its video (see fitCameraHeight): new sizes for
+    // the split above it.
+    ipcMain.on('pane:resize-split', (event, splitPath, sizes) => {
+      const term = this.#fromSender(event);
+      if (!term?.layout) return;
+      try {
+        this.resizeSplit(term.id, splitPath, sizes);
+      } catch (err) {
+        console.warn('pane:resize-split:', err.message);
+      }
+    });
     ipcMain.on('pane:focus', (event, paneId) => {
       const term = this.#fromSender(event);
       if (term && term.panes.has(paneId) && term.activePane !== paneId) {
@@ -328,6 +340,8 @@ class WindowManager extends EventEmitter {
     plannerAction('planner:source', (id, paneId, source) => this.setPaneSource(id, paneId, source));
     plannerAction('planner:add-pane', (id, source) => this.addPane(id, source));
     plannerAction('planner:stop-app', (app, instance) => this.stopApp(app, instance));
+    plannerAction('planner:camera-fill-width', (id, paneId, on) => this.setCameraFillWidth(id, paneId, on));
+    plannerAction('planner:camera-fit-height', (id, paneId) => this.fitCameraHeight(id, paneId));
     plannerAction('planner:reload-page', (id, paneId) => this.reloadPage(id, paneId));
     plannerAction('planner:open-app', (id, paneId, pkg) => this.openDeviceApp(id, paneId, pkg));
     plannerAction('planner:shown-apps', (serial, packages) => this.setShownApps(serial, packages));
@@ -393,7 +407,7 @@ class WindowManager extends EventEmitter {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
       const deviceApp = p.foreground ? { package: p.foreground, name: this.#appName(p.device, p.foreground) } : null;
-      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, container: p.container ?? null, page: p.page ?? null, planner: Boolean(p.planner), droidcam: Boolean(p.droidcam), device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, deviceApp, model: p.model ?? null, pid: p.pty?.pid ?? null };
+      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, container: p.container ?? null, page: p.page ?? null, planner: Boolean(p.planner), droidcam: Boolean(p.droidcam), fillWidth: Boolean(p.fillWidth), device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, deviceApp, model: p.model ?? null, pid: p.pty?.pid ?? null };
     });
   }
 
@@ -593,7 +607,8 @@ class WindowManager extends EventEmitter {
       if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: p.container ?? `${p.app} ${p.instance} (${p.tag})` };
       if (p.kind === 'page') panes[p.id] = { kind: 'page', url: p.page };
       if (p.kind === 'planner') panes[p.id] = { kind: 'planner', url: PLANNER_PANE_URL };
-      if (p.kind === 'camera') panes[p.id] = { kind: 'camera', name: 'Droidcam', label: 'DroidCam' };
+      // Spanning the width only applies beside other panes; alone, it shows it all.
+      if (p.kind === 'camera') panes[p.id] = { kind: 'camera', name: 'Droidcam', label: 'DroidCam', fillWidth: p.fillWidth && layout.leaves(term.layout).length > 1 };
       if (p.kind === 'scrcpy') panes[p.id] = { kind: 'scrcpy', status: p.status, fit: scrcpy.isFit(p.display), captureMouse: p.mirror?.capturesMouse ?? false };
     }
     term.win.webContents.send('layout', { layout: term.layout, active: term.activePane, maximized: term.maximized, panes });
@@ -788,9 +803,9 @@ class WindowManager extends EventEmitter {
 
   // A camera pane shows a V4L2 capture device, found and opened by the window; the
   // DroidCam client, not the app, feeds the phone's camera into it.
-  #spawnCameraPane(term) {
+  #spawnCameraPane(term, source) {
     const id = crypto.randomUUID();
-    term.panes.set(id, { id, kind: 'camera', droidcam: true, mux: null, session: null, app: null, instance: null, title: 'DroidCam', process: 'droidcam', exited: false });
+    term.panes.set(id, { id, kind: 'camera', droidcam: true, fillWidth: Boolean(source.fillWidth), mux: null, session: null, app: null, instance: null, title: 'DroidCam', process: 'droidcam', exited: false });
     return id;
   }
 
@@ -802,9 +817,29 @@ class WindowManager extends EventEmitter {
     return true;
   }
 
+  // A camera pane's video spans the pane's width, its top and bottom cropped to the
+  // pane's height, rather than showing whole inside it. Only with other panes beside it.
+  setCameraFillWidth(id, paneId, on) {
+    const term = this.get(id);
+    const pane = term?.panes.get(paneId);
+    if (pane?.kind !== 'camera') return false;
+    pane.fillWidth = Boolean(on);
+    this.#pushLayout(term);
+    return true;
+  }
+
+  // Asks the window to make a camera pane as tall as its video is at the pane's width,
+  // by resizing the split above it; the window knows the video's size and the pane's.
+  fitCameraHeight(id, paneId) {
+    const term = this.get(id);
+    if (term?.panes.get(paneId)?.kind !== 'camera' || term.win.isDestroyed()) return false;
+    term.win.webContents.send('camera:fit-height', paneId);
+    return true;
+  }
+
   #makePane(term, source) {
     if (source?.planner) return this.#spawnPlannerPane(term);
-    if (source?.droidcam) return this.#spawnCameraPane(term);
+    if (source?.droidcam) return this.#spawnCameraPane(term, source);
     if (source?.page) return this.#spawnPagePane(term, source);
     if (source?.device) return this.#spawnScrcpyPane(term, source);
     return source?.app || source?.container ? this.#spawnWebPane(term, source) : this.#spawnPane(term, source);
