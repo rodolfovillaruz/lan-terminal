@@ -178,4 +178,4 @@ function stop(bin, app, name) {
   return docker(bin, ['stop', container(app, name)], 60000);
 }
 
-module.exports = { validName, validApp, validTag, container, parseImage, parseList, parseLabelled, images, list, labelled, runArgs, ensure, ensureLabelled, stop };
+module.exports = { validName, validApp, validTag, container, parseImage, parseList, parseLabelled, images, list, labelled, runArgs, waitForHttp, ensure, ensureLabelled, stop };

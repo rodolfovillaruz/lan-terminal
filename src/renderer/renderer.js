@@ -41,14 +41,28 @@ async function main() {
     // Inside the slot's border, which draws the line between panes.
     const place = () => {
       const r = el.getBoundingClientRect();
-      // Hidden too behind a maximized pane, which only the tree's classes tell.
-      box.hidden = !el.isConnected || el.clientWidth === 0 || (root.classList.contains('maximized') && !el.classList.contains('max'));
+      // Hidden too behind a maximized pane, unless pinned, which only the tree's classes tell.
+      const maxed = root.classList.contains('maximized');
+      box.hidden = !el.isConnected || el.clientWidth === 0 || (maxed && !el.classList.contains('max') && !el.classList.contains('pinned'));
+      const left = r.left + el.clientLeft;
+      const top = r.top + el.clientTop;
       Object.assign(box.style, {
-        left: `${r.left + el.clientLeft}px`,
-        top: `${r.top + el.clientTop}px`,
+        left: `${left}px`,
+        top: `${top}px`,
         width: `${el.clientWidth}px`,
         height: `${el.clientHeight}px`,
+        zIndex: el.classList.contains('pinned') ? 2 : el.classList.contains('max') ? 1 : '',
+        clipPath: '',
       });
+      // A maximized app or page lies over the window's own panes, so it leaves holes
+      // where pinned panes are.
+      if (maxed && el.classList.contains('max')) {
+        const holes = [...root.querySelectorAll('.pane.pinned')].map((p) => {
+          const h = p.getBoundingClientRect();
+          return `M${h.left - left} ${h.top - top}h${h.width}v${h.height}h${-h.width}z`;
+        });
+        if (holes.length) box.style.clipPath = `path(evenodd, 'M0 0h${el.clientWidth}v${el.clientHeight}h${-el.clientWidth}z${holes.join('')}')`;
+      }
     };
     new ResizeObserver(place).observe(el);
     return { el, box, place };
@@ -605,6 +619,160 @@ async function main() {
     return p;
   };
 
+  // A new pane's form: open one of the app's pods in a namespace, make a new pod from
+  // any linuxserver image, or start a shell. The namespace starts on the one the last
+  // new pod went to. Picking one turns the pane into it.
+  const createLauncherPane = (id) => {
+    const el = document.createElement('div');
+    el.className = 'pane launcher';
+    el.addEventListener('focusin', onFocus(id));
+    el.innerHTML = `
+      <form>
+        <h2>New pane</h2>
+        <label class="row">Namespace <select name="namespace"></select></label>
+        <div class="row new-namespace" hidden>
+          <input name="newNamespace" placeholder="namespace name" autocomplete="off" spellcheck="false">
+          <button type="button" data-act="create-namespace">Create</button>
+          <button type="button" data-act="cancel-namespace">Cancel</button>
+        </div>
+        <h3>Open a pod</h3>
+        <ul class="pods"></ul>
+        <h3>New pod</h3>
+        <label class="row">Image <span class="prefix">lscr.io/linuxserver/</span><input name="image" list="launcher-images-${id}" placeholder="webtop" autocomplete="off" spellcheck="false"></label>
+        <datalist id="launcher-images-${id}"></datalist>
+        <label class="row">Tag <input name="tag" list="launcher-tags-${id}" value="latest" autocomplete="off" spellcheck="false"></label>
+        <datalist id="launcher-tags-${id}"></datalist>
+        <label class="row">UI port <input name="port" type="number" min="1" max="65535" value="3000"></label>
+        <p class="about"></p>
+        <div class="row">
+          <button type="submit">Create pod</button>
+          <button type="button" data-act="shell">Shell instead</button>
+          <button type="button" data-act="refresh" title="List the namespaces and pods again">↻</button>
+        </div>
+        <p class="status"></p>
+      </form>`;
+    const form = el.querySelector('form');
+    const nsSelect = form.elements.namespace;
+    const newNs = el.querySelector('.new-namespace');
+    const podList = el.querySelector('.pods');
+    const imageList = el.querySelector(`#launcher-images-${id}`);
+    const tagList = el.querySelector(`#launcher-tags-${id}`);
+    const about = el.querySelector('.about');
+    const status = el.querySelector('.status');
+    const NEW_NS = '\u0000new'; // the "New namespace…" option, which no namespace can be named
+    let st = null; // the last launcherState
+    let busy = false;
+
+    const say = (text, error = false) => {
+      status.textContent = text;
+      status.classList.toggle('error', error);
+    };
+    const drawPods = () => {
+      const ns = nsSelect.value;
+      const pods = (st?.pods ?? []).filter((p) => p.namespace === ns);
+      podList.replaceChildren(...pods.map((p) => {
+        const li = document.createElement('li');
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = p.name;
+        b.addEventListener('click', () => launch(`pod:${p.namespace}:${p.name}`, `Opening ${p.namespace}/${p.name}…`));
+        const what = document.createElement('span');
+        what.textContent = `${p.app ? `${p.app}:${p.tag}` : 'unknown image'} · ${p.ready ? 'ready' : p.phase}`;
+        li.append(b, what);
+        return li;
+      }));
+      if (!pods.length) {
+        const li = document.createElement('li');
+        li.className = 'none';
+        li.textContent = ns ? `No pods from this app in ${ns} yet.` : 'No namespace.';
+        podList.append(li);
+      }
+    };
+    const drawImage = () => {
+      const image = st?.images.find((i) => i.name === form.elements.image.value.trim());
+      tagList.replaceChildren(...(image?.tags ?? ['latest']).map((t) => Object.assign(document.createElement('option'), { value: t })));
+      about.textContent = image ? `${image.category ? `${image.category}. ` : ''}${image.description.replace(/\[([^\]]*)\]/g, '$1')}` : '';
+    };
+    const load = async (keepNamespace = true) => {
+      say('Listing namespaces, pods and images…');
+      const prev = keepNamespace ? nsSelect.value : '';
+      st = await window.terminal.launcherState();
+      if (!st) return;
+      const pick = prev && st.namespaces.includes(prev) ? prev : st.namespace;
+      nsSelect.replaceChildren(
+        ...st.namespaces.map((n) => Object.assign(document.createElement('option'), { value: n, textContent: n })),
+        Object.assign(document.createElement('option'), { value: NEW_NS, textContent: 'New namespace…' }),
+      );
+      nsSelect.value = pick ?? NEW_NS;
+      newNs.hidden = nsSelect.value !== NEW_NS;
+      imageList.replaceChildren(...st.images.map((i) => Object.assign(document.createElement('option'), { value: i.name, textContent: i.category })));
+      drawPods();
+      drawImage();
+      say(st.errors.join(' · '), st.errors.length > 0);
+    };
+    const launch = async (choice, message) => {
+      if (busy) return;
+      busy = true;
+      say(message);
+      const err = await window.terminal.launch(id, choice);
+      busy = false;
+      // On success the pane turns into what was picked and this form goes away.
+      if (err) say(err, true);
+    };
+
+    nsSelect.addEventListener('change', () => {
+      newNs.hidden = nsSelect.value !== NEW_NS;
+      if (!newNs.hidden) form.elements.newNamespace.focus();
+      drawPods();
+    });
+    form.elements.image.addEventListener('input', drawImage);
+    form.addEventListener('click', async (e) => {
+      const act = e.target.closest('button')?.dataset.act;
+      if (act === 'shell') launch('shell', 'Starting a shell…');
+      if (act === 'refresh') load();
+      if (act === 'cancel-namespace') {
+        nsSelect.value = st?.namespace ?? '';
+        newNs.hidden = true;
+        drawPods();
+      }
+      if (act === 'create-namespace') {
+        const name = form.elements.newNamespace.value.trim();
+        say(`Creating namespace ${name}…`);
+        const err = await window.terminal.createNamespace(name);
+        if (err) return say(err, true);
+        form.elements.newNamespace.value = '';
+        await load(false);
+        nsSelect.value = name;
+        newNs.hidden = true;
+        drawPods();
+        say(`Created namespace ${name}.`);
+      }
+    });
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const ns = nsSelect.value;
+      const image = form.elements.image.value.trim();
+      const tag = form.elements.tag.value.trim() || 'latest';
+      const port = Number(form.elements.port.value);
+      if (!ns || ns === NEW_NS) return say('Pick a namespace first.', true);
+      if (!/^[a-z0-9][a-z0-9_.-]*$/.test(image)) return say('Pick an image, e.g. webtop.', true);
+      if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(tag)) return say('That is not an image tag.', true);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return say('The UI port is a number from 1 to 65535.', true);
+      launch(`pod:new:${ns}:${image}:${tag}:${port}`, `Creating a ${image} pod in ${ns}…`);
+    });
+    load();
+
+    const p = {
+      el,
+      update: () => {},
+      syncSize: () => {},
+      focus: () => (form.elements.image.value ? nsSelect : form.elements.image).focus(),
+      dispose: () => {},
+    };
+    panes.set(id, p);
+    return p;
+  };
+
   // Rebuilds the split containers and moves the existing pane elements into them, so
   // reordering keeps each pane's xterm and scrollback.
   const paneEl = (id, info) => {
@@ -616,6 +784,7 @@ async function main() {
     if (other?.kind === 'page') return createPagePane(id, other).el;
     if (other?.kind === 'planner') return createPlannerPane(id, other).el;
     if (other?.kind === 'camera') return createCameraPane(id, other).el;
+    if (other?.kind === 'launcher') return createLauncherPane(id).el;
     return (other ? createWebPane(id, other) : createPane(id)).el;
   };
   // The maximized pane goes in maxed.el, to be laid over the whole window, and an
@@ -702,7 +871,13 @@ async function main() {
     // A maximized pane covers the window; the others keep their size underneath, so
     // their shells and displays are not resized there and back.
     root.classList.toggle('maximized', Boolean(maxed.el));
-    for (const p of panes.values()) p.el.classList.toggle('max', p.el === maxed.el);
+    maxedId = maxed.el ? state.maximized : null;
+    // Pinned panes stay in sight, in their place, over the maximized one.
+    pinned = new Set(state.pinned ?? []);
+    for (const [id, p] of panes) {
+      p.el.classList.toggle('max', p.el === maxed.el);
+      p.el.classList.toggle('pinned', pinned.has(id) && p.el !== maxed.el);
+    }
     for (const p of panes.values()) p.syncSize();
     const target = panes.get(state.active);
     if (target && (state.active !== active || !target.el.contains(document.activeElement))) {
@@ -793,46 +968,160 @@ async function main() {
     h.addEventListener('lostpointercapture', end);
     return h;
   };
-  // Also in resize mode, the half of the pane under the pointer nearest to it shows
-  // where a click puts a new shell. Not over a handle, which is for dragging.
+  // Also in resize mode, each pane under the pointer shows what a press there does:
+  //  - its tools in its top left corner: ✕ closes it, 📌 pins it over a maximized pane,
+  //    ⛶ maximizes it (⊡ puts the panes back);
+  //  - within an eighth of its size from its centre, a hand: drag it onto another pane
+  //    to trade places (its middle) or to go beside it (an edge), as in the planner;
+  //  - elsewhere, the half nearest the pointer, where a click puts a new pane.
+  // Nothing over a handle, which is for dragging the line.
   const preview = document.createElement('div');
   preview.className = 'split-preview';
   preview.hidden = true;
-  preview.textContent = '+';
-  resizeOverlay.append(preview);
+  const tools = document.createElement('div');
+  tools.className = 'pane-tools';
+  tools.hidden = true;
+  const tool = (label, title, onClick) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.title = title;
+    b.addEventListener('pointerdown', (e) => e.stopPropagation());
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onClick();
+    });
+    tools.append(b);
+    return b;
+  };
+  let toolsPane = null; // the pane the tools are on
+  const closeTool = tool('✕', 'Close pane', () => window.terminal.closePane(toolsPane));
+  const pinTool = tool('📌', '', () => window.terminal.pinPane(toolsPane, !pinned.has(toolsPane)));
+  const maxTool = tool('⛶', '', () => window.terminal.maximizePane(maxedId === toolsPane ? null : toolsPane));
+  resizeOverlay.append(preview, tools);
+  let maxedId = null; // as last drawn
+  let pinned = new Set();
   let splitTarget = null; // { id, side }
-  const paneAt = (x, y) => {
+  let moving = null; // a pane being pressed or dragged by its middle: { id, x, y, dragged, target }
+  let pressedMiddle = false; // the press was on a pane's middle, so its click splits nothing
+  let pointer = null; // the pointer's last place over the overlay
+  const MIDDLE = 1 / 8;
+  const DRAG_START = 5; // px
+
+  // The pane on top at a point: a pinned pane over a maximized one, then the
+  // maximized pane, or any pane when none is maximized.
+  const paneAt = (x, y, except = null) => {
     const maxed = root.classList.contains('maximized');
-    for (const [id, p] of panes) {
-      if (!p.el.isConnected || (maxed && !p.el.classList.contains('max'))) continue;
+    const order = [...panes].filter(([id, p]) => id !== except && p.el.isConnected && (!maxed || p.el.classList.contains('max') || pinned.has(id)));
+    if (maxed) order.sort(([a], [b]) => pinned.has(b) - pinned.has(a));
+    for (const [id, p] of order) {
       const r = p.el.getBoundingClientRect();
       if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return { id, r };
     }
     return null;
   };
-  const showSplit = (e) => {
-    const hit = e && !resizing && e.target === resizeOverlay ? paneAt(e.clientX, e.clientY) : null;
-    splitTarget = null;
-    preview.hidden = !hit;
-    if (!hit) return;
-    const { r } = hit;
-    const x = (e.clientX - r.left) / r.width;
-    const y = (e.clientY - r.top) / r.height;
-    const [side] = [['left', x], ['right', 1 - x], ['top', y], ['bottom', 1 - y]].sort((a, b) => a[1] - b[1])[0];
-    splitTarget = { id: hit.id, side };
+  const showBox = (left, top, width, height, label) => {
+    Object.assign(preview.style, { left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px` });
+    preview.textContent = label;
+    preview.hidden = false;
+  };
+  // Where on pane r a point is, as shares of its width and height.
+  const shares = (r, x, y) => [(x - r.left) / r.width, (y - r.top) / r.height];
+  const inMiddle = (r, x, y) => {
+    const [fx, fy] = shares(r, x, y);
+    return Math.abs(fx - 0.5) <= MIDDLE && Math.abs(fy - 0.5) <= MIDDLE;
+  };
+  const nearestSide = (fx, fy) => [['left', fx], ['right', 1 - fx], ['top', fy], ['bottom', 1 - fy]].sort((a, b) => a[1] - b[1])[0];
+  const showHalf = (r, side, label) => {
     const w = side === 'left' || side === 'right' ? r.width / 2 : r.width;
     const h = side === 'top' || side === 'bottom' ? r.height / 2 : r.height;
-    Object.assign(preview.style, {
-      left: `${side === 'right' ? r.right - w : r.left}px`,
-      top: `${side === 'bottom' ? r.bottom - h : r.top}px`,
-      width: `${w}px`,
-      height: `${h}px`,
-    });
+    showBox(side === 'right' ? r.right - w : r.left, side === 'bottom' ? r.bottom - h : r.top, w, h, label);
   };
-  resizeOverlay.addEventListener('pointermove', showSplit);
-  resizeOverlay.addEventListener('pointerleave', () => showSplit(null));
+  const showTools = (hit) => {
+    toolsPane = hit?.id ?? null;
+    tools.hidden = !hit;
+    if (!hit) return;
+    Object.assign(tools.style, { left: `${hit.r.left + 6}px`, top: `${hit.r.top + 6}px` });
+    closeTool.disabled = panes.size === 1;
+    pinTool.classList.toggle('on', pinned.has(hit.id));
+    pinTool.title = pinned.has(hit.id) ? 'Unpin: hide it behind a maximized pane again' : 'Pin: keep it in sight, in its place, over a maximized pane';
+    maxTool.textContent = maxedId === hit.id ? '⊡' : '⛶';
+    maxTool.title = maxedId === hit.id ? 'Put the panes back' : 'Maximize: fill the window with this pane';
+  };
+
+  const hover = (x, y, target) => {
+    splitTarget = null;
+    preview.hidden = true;
+    resizeOverlay.style.cursor = '';
+    if (resizeOverlay.hidden || resizing || x === undefined) return showTools(null);
+    if (moving) {
+      resizeOverlay.style.cursor = 'grabbing';
+      // A press that moves less than DRAG_START pixels drops nowhere.
+      moving.dragged ||= Math.hypot(x - moving.x, y - moving.y) >= DRAG_START;
+      moving.target = null;
+      if (!moving.dragged) return;
+      // Where the dragged pane would land: trading places in a pane's middle, or beside
+      // it at an edge (a quarter of its size, as in the planner).
+      const hit = paneAt(x, y, moving.id);
+      if (!hit) return;
+      const [fx, fy] = shares(hit.r, x, y);
+      const [side, d] = nearestSide(fx, fy);
+      const zone = d < 0.25 ? side : 'center';
+      moving.target = { id: hit.id, zone };
+      if (zone === 'center') showBox(hit.r.left, hit.r.top, hit.r.width, hit.r.height, '⇄');
+      else showHalf(hit.r, side, '→');
+      return;
+    }
+    if (target !== resizeOverlay && !tools.contains(target)) return; // a handle
+    const hit = paneAt(x, y);
+    if (!tools.contains(target)) showTools(hit);
+    if (!hit || tools.contains(target)) return;
+    if (inMiddle(hit.r, x, y)) {
+      resizeOverlay.style.cursor = 'grab';
+      return;
+    }
+    const [side] = nearestSide(...shares(hit.r, x, y));
+    splitTarget = { id: hit.id, side };
+    showHalf(hit.r, side, '+');
+  };
+  const rehover = () => (pointer ? hover(pointer.x, pointer.y, document.elementFromPoint(pointer.x, pointer.y)) : hover());
+
+  resizeOverlay.addEventListener('pointermove', (e) => {
+    pointer = { x: e.clientX, y: e.clientY };
+    hover(e.clientX, e.clientY, e.target);
+  });
+  resizeOverlay.addEventListener('pointerleave', () => {
+    if (moving) return;
+    pointer = null;
+    hover();
+  });
+  resizeOverlay.addEventListener('pointerdown', (e) => {
+    pressedMiddle = false;
+    if (e.button !== 0 || e.target !== resizeOverlay) return;
+    const hit = paneAt(e.clientX, e.clientY);
+    if (!hit || !inMiddle(hit.r, e.clientX, e.clientY)) return;
+    e.preventDefault();
+    pressedMiddle = true;
+    resizeOverlay.setPointerCapture(e.pointerId);
+    moving = { id: hit.id, x: e.clientX, y: e.clientY, dragged: false, target: null };
+    showTools(null);
+    hover(e.clientX, e.clientY, e.target);
+  });
+  const endMove = () => {
+    if (!moving) return;
+    const { id, target } = moving;
+    moving = null;
+    if (target) window.terminal.movePane(id, target.id, target.zone);
+    rehover();
+  };
+  resizeOverlay.addEventListener('pointerup', endMove);
+  resizeOverlay.addEventListener('pointercancel', () => {
+    if (moving) moving.target = null;
+    endMove();
+  });
+  resizeOverlay.addEventListener('lostpointercapture', endMove);
   resizeOverlay.addEventListener('click', (e) => {
-    showSplit(e);
+    if (pressedMiddle || e.target !== resizeOverlay) return;
+    hover(e.clientX, e.clientY, e.target);
     if (splitTarget) window.terminal.splitPane(splitTarget.id, splitTarget.side);
   });
 
@@ -840,24 +1129,27 @@ async function main() {
   // maximized: its lines are out of sight.
   function drawHandles() {
     if (resizing) return;
-    preview.hidden = true; // the panes may have moved
     for (const h of resizeOverlay.querySelectorAll('.handle')) h.remove();
-    if (resizeOverlay.hidden || !drawn || root.classList.contains('maximized')) return;
-    const walk = (node, el, path) => {
-      if (node.type === 'pane') return;
-      const items = [...el.children];
-      node.children.forEach((child, i) => {
-        walk(child, items[i], [...path, i]);
-        if (i > 0) resizeOverlay.appendChild(handle(node, el, items, path, i - 1));
-      });
-    };
-    walk(drawn, root.firstElementChild, []);
+    if (!resizeOverlay.hidden && drawn && !root.classList.contains('maximized')) {
+      const walk = (node, el, path) => {
+        if (node.type === 'pane') return;
+        const items = [...el.children];
+        node.children.forEach((child, i) => {
+          walk(child, items[i], [...path, i]);
+          if (i > 0) resizeOverlay.appendChild(handle(node, el, items, path, i - 1));
+        });
+      };
+      walk(drawn, root.firstElementChild, []);
+    }
+    // The panes may have moved under the pointer.
+    if (!moving) rehover();
   }
   window.addEventListener('resize', drawHandles);
   window.terminal.onResizeMode((enabled) => {
     resizeOverlay.hidden = !enabled;
     if (enabled) document.activeElement?.blur();
     else if (overlay.hidden) panes.get(active)?.focus();
+    moving = null;
     drawHandles();
   });
 

@@ -20,6 +20,8 @@ const DEFAULTS = {
   tmux: null,
   screen: null,
   docker: null, // for linuxserver app panes (webtop, chromium, ...); null = find on $PATH
+  kubectl: null, // for Kubernetes pod panes; null = find on $PATH
+  podNamespace: null, // where the last new pod went; a new pane's form starts there
   // For Android device panes; null = find on $PATH (adb also in the Android SDK).
   adb: null,
   scrcpy: null,

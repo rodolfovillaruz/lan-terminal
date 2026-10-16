@@ -55,6 +55,8 @@ On first run the app writes a config file to `~/.config/lan-terminal/config.json
 | `shellArgs` | `["-l"]` | Shell arguments (default starts a login shell) |
 | `ptmux` / `tmux` / `screen` | `null` | Paths to the multiplexers for session panes; `null` looks on `$PATH`, then in `~/.cargo/bin` |
 | `docker` | `null` | Path to docker, for linuxserver app panes; `null` looks on `$PATH` |
+| `kubectl` | `null` | Path to kubectl, for Kubernetes pod panes; `null` looks on `$PATH` |
+| `podNamespace` | `null` | The namespace the last new pod went to, where the next new pane's form starts; set by the app |
 | `adb` / `scrcpy` | `null` | Paths to adb and scrcpy, for Android device panes; `null` looks on `$PATH` (and for adb also in `$ANDROID_HOME` and `~/Android/Sdk`) |
 | `scrcpyDisplays` | `[]` | More new-display sizes for the pane menu, in `--new-display` form (`"1920x1080"`, `"1920x1080/240"`, `"/240"`), or `"fit/<dpi>"` for one that fits its pane at that density |
 | `scrcpyKeepApps` | `false` | Closing a new display moves its apps to the phone's screen instead of closing them (`--no-vd-destroy-content`) |
@@ -107,7 +109,7 @@ To show one pane on its own for a while, **maximize** it: the card's **⛶** but
 
 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>, in any pane, keeps the window **always on top** (above everything, covering the panel, and out of the taskbar and Alt+Tab) or stops it, like `POST /windows/:id/always-on-top`.
 
-<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>R</kbd>, in any pane, turns **resize mode** on or off. It puts a handle on each line between the window's panes; drag one to resize the panes on either side, as in the planner. The panes take their new size when you let go. Elsewhere on a pane, the half nearest the pointer lights up with a **+**: click to split the pane there and open a new shell on that side. While it is on, the panes get no mouse or keyboard input; press the same keys or Esc to turn it off. Presenter mode hides its tint, label and handles, leaving only the resize cursor over each line.
+<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>R</kbd>, in any pane, turns **resize mode** on or off. It puts a handle on each line between the window's panes; drag one to resize the panes on either side, as in the planner. The panes take their new size when you let go. Elsewhere on a pane, the half nearest the pointer lights up with a **+**: click to split the pane there and open a **New pane** form on that side (see Kubernetes pods below). The pane under the pointer also shows its tools in its top left corner: **✕** closes it, **📌** pins it, and **⛶** maximizes it (**⊡** puts the panes back). A pinned pane stays in sight, in its place, over whichever pane is maximized, so you can keep, say, a camera or a shell showing over a full-window desktop; pinning is not saved with the layout. Within an eighth of a pane's size from its centre the cursor becomes a hand: drag the pane onto another one to trade places (drop on its middle) or to put it beside it (drop near an edge), as in the planner. While it is on, the panes get no mouse or keyboard input; press the same keys or Esc to turn it off. Presenter mode hides its tint, label and handles, leaving only the resize cursor over each line.
 
 In a shell or session pane, select text with the mouse and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> to copy it to the clipboard. <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> pastes the clipboard into the pane.
 
@@ -131,6 +133,19 @@ The linuxserver group also lists containers that something else runs, such as a 
 Its pane shows the UI like an app's, and picking it starts the container if it is stopped. The app never stops, recreates or removes it, so its pane has no **■** button: compose (or whatever runs it) owns it. It is saved with the layout by its label, so it survives the container being recreated.
 
 Each running app holds from several hundred MB (one app) to a few GB (a desktop) of memory, so stop the ones you aren't using.
+
+The same images can run as **Kubernetes pods**, on the cluster that `kubectl` talks to. A pane added in resize mode starts as a **New pane** form (the menu's **New pod…** turns any pane into one):
+
+- **Namespace** picks where the pods are. It starts on the namespace the last new pod went to (`podNamespace` in the config), or `default`. **New namespace…** creates one.
+- **Open a pod** lists the pods the app made in that namespace; click one to show it.
+- **New pod** makes one from any image in [linuxserver's catalog](https://www.linuxserver.io/our-images), with a tag (the catalog's, or any other) and the port its UI serves (3000 for the desktops and GUI apps; a server app's own port otherwise). Kubernetes pulls the image, so the first start of a desktop takes a few minutes.
+- **Shell instead** makes the pane a shell.
+
+A new pod is the bare Pod `<image>-<number>` in that namespace, labelled `app.kubernetes.io/managed-by=lan-terminal`, running as your user like the containers, with its home directory (`/config`) on an `emptyDir`: it lasts through restarts of the container and of the node, and goes when the pod is deleted. The pane reaches the UI through `kubectl port-forward` on a localhost port, and when the forward drops (the container restarting, say) it says so and connects again. Pods keep running when their pane closes, the menu's **Kubernetes pods** group lists them for any pane, and they are saved with the layout. The app never deletes a pod; to delete one:
+
+```sh
+kubectl delete pod -n <namespace> <name>
+```
 
 The menu also lists each connected **Android device** (`adb devices`) by its model name. Its pane shows the phone's screen through [scrcpy](https://github.com/Genymobile/scrcpy): the app starts the server that ships with the installed scrcpy (`<prefix>/share/scrcpy/scrcpy-server`, or `$SCRCPY_SERVER_PATH`), reads the H.264 stream and draws it inside the pane, so no scrcpy window opens and the screen shows up in a window capture. Dragging with the left button is a finger on the touchscreen, the wheel scrolls, the right button is Back, the middle button Home, and the back and forward mouse buttons are Back and the app switcher. Typing goes to the device: text as text, and Enter, arrows, Backspace and Ctrl/Alt shortcuts as Android keys. Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>X</kbd> in a device pane to **capture** the mouse and keyboard, as scrcpy's `--mouse=uhid --keyboard=uhid` do: the device gets a USB mouse and keyboard, the pointer is locked to the pane and the device shows its own cursor, and every key goes to the device as a physical key press, Ctrl and Alt shortcuts included (with the device's keyboard layout, US unless set in Android's physical keyboard settings). Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>X</kbd> again to release them; leaving the pane (Alt+Tab, say) releases them too. Before Android 15 a USB mouse can only point at the phone's own screen, so on a new display only the keyboard is captured there and the mouse keeps working as a finger. The pane also plays the device's **sound** (Android 11 or later), as scrcpy does: the phone's whole audio output comes through the app (and so into an OBS capture of it) and the phone itself goes quiet while it is mirrored, unless `scrcpyAudioDup` keeps it playing there too. A device has one sound, so with several panes on the same device only the first plays it. Unlike a session, the mirror ends with its pane.
 

@@ -55,11 +55,14 @@ html, body {
 /* A maximized pane fills the window; the others stay laid out, hidden, under it. */
 #terminal.maximized .pane { visibility: hidden; }
 #terminal.maximized > .pane.max { visibility: visible; position: absolute; inset: 0; z-index: 1; border: 0; }
+/* A pinned pane stays in sight, in its place, over the maximized one. */
+#terminal.maximized .pane.pinned { visibility: visible; z-index: 2; background: #000; outline: 1px solid rgba(230, 230, 230, 0.18); }
 
 /* An app pane is an empty slot in the tree; its UI sits over it in #apps,
    which the move overlay still covers. */
 .pane.web { padding: 0; }
-#apps { position: absolute; inset: 0; pointer-events: none; }
+/* Its own stacking context, so a pinned or maximized app's z-index stays under the overlays. */
+#apps { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
 #apps .app {
   position: absolute;
   display: flex;
@@ -163,6 +166,24 @@ html, body {
 #resize-overlay .handle.col::after { inset: 3px 25%; }
 #resize-overlay .handle:hover::after, #resize-overlay .handle.dragging::after { background: rgba(80, 160, 255, 1); }
 #resize-overlay.presenter .handle::after { background: none; }
+/* A pane's tools in resize mode: close, pin and maximize. */
+#resize-overlay .pane-tools { position: absolute; z-index: 3; display: flex; gap: 4px; }
+#resize-overlay .pane-tools[hidden] { display: none; }
+#resize-overlay .pane-tools button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  font: 15px 'JetBrainsMono NL NFM', 'Noto Color Emoji', monospace;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.75);
+  border: 1px solid rgba(230, 230, 230, 0.3);
+  border-radius: 6px;
+  cursor: pointer;
+}
+#resize-overlay .pane-tools button:hover { border-color: rgba(80, 160, 255, 1); }
+#resize-overlay .pane-tools button.on { background: rgba(30, 120, 255, 0.6); }
+#resize-overlay .pane-tools button:disabled { opacity: 0.4; cursor: default; }
+
 /* Where a click in resize mode puts a new pane; shown in presenter mode too, since
    it only follows the pointer. */
 #resize-overlay .split-preview {
@@ -178,3 +199,32 @@ html, body {
   font: bold 48px 'JetBrainsMono NL NFM', monospace;
 }
 #resize-overlay .split-preview[hidden] { display: none; }
+
+/* A new pane's form (see createLauncherPane). */
+.pane.launcher { overflow: auto; padding: 16px 20px; color: rgba(230, 230, 230, 0.9); font: 14px 'JetBrainsMono NL NFM', monospace; }
+.launcher form { max-width: 640px; }
+.launcher h2 { margin: 0 0 12px; font-size: 18px; }
+.launcher h3 { margin: 18px 0 8px; font-size: 14px; color: rgba(80, 160, 255, 0.95); }
+.launcher .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
+.launcher .row[hidden] { display: none; }
+.launcher .prefix { opacity: 0.55; margin-right: -8px; }
+.launcher input, .launcher select, .launcher button {
+  font: inherit;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(230, 230, 230, 0.25);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+.launcher select option { background: #111; }
+.launcher input[name="port"] { width: 7ch; }
+.launcher button { cursor: pointer; }
+.launcher button:hover, .launcher button:focus-visible { border-color: rgba(80, 160, 255, 0.9); outline: none; }
+.launcher button[type="submit"] { background: rgba(30, 120, 255, 0.35); }
+.launcher .pods { list-style: none; margin: 0; padding: 0; }
+.launcher .pods li { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
+.launcher .pods li span, .launcher .pods li.none { opacity: 0.6; }
+.launcher .about { opacity: 0.6; margin: 6px 0; max-height: 4.5em; overflow: hidden; }
+.launcher .about:empty { display: none; }
+.launcher .status { min-height: 1.2em; opacity: 0.75; }
+.launcher .status.error { color: #ff8a80; opacity: 1; }

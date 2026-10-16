@@ -13,6 +13,12 @@ contextBridge.exposeInMainWorld('terminal', {
   // Camera panes: fitting a pane's height to its video resizes the split above it.
   onCameraFitHeight: (cb) => ipcRenderer.on('camera:fit-height', (_e, paneId) => cb(paneId)),
   resizeSplit: (splitPath, sizes) => ipcRenderer.send('pane:resize-split', splitPath, sizes),
+  // A new pane's form: what it offers, a new namespace, and opening a pod or a shell
+  // ('pod:<ns>:<name>', 'pod:new:<ns>:<app>:<tag>:<port>' or 'shell'). The last two
+  // resolve with an error message, or null.
+  launcherState: () => ipcRenderer.invoke('launcher:state'),
+  createNamespace: (name) => ipcRenderer.invoke('launcher:namespace', name),
+  launch: (paneId, choice) => ipcRenderer.invoke('launcher:open', paneId, choice),
   copy: (text) => ipcRenderer.send('clipboard:write', text),
   paste: () => ipcRenderer.invoke('clipboard:read'),
   // Android device panes: the video stream in, touch and key events out.
@@ -32,6 +38,11 @@ contextBridge.exposeInMainWorld('terminal', {
   exitMoveMode: () => ipcRenderer.send('moveMode:exit'),
   onResizeMode: (cb) => ipcRenderer.on('resizeMode', (_e, enabled) => cb(enabled)),
   exitResizeMode: () => ipcRenderer.send('resizeMode:exit'),
+  // Resize mode's pane tools. zone: 'center' (trade places) or a side of the target.
+  closePane: (paneId) => ipcRenderer.send('pane:close', paneId),
+  pinPane: (paneId, on) => ipcRenderer.send('pane:pin', paneId, on),
+  maximizePane: (paneId) => ipcRenderer.send('pane:maximize', paneId),
+  movePane: (paneId, targetId, zone) => ipcRenderer.send('pane:move', paneId, targetId, zone),
   // side: 'left', 'right', 'top' or 'bottom' of the pane.
   splitPane: (paneId, side) => ipcRenderer.send('pane:split', paneId, side),
   moveStart: () => ipcRenderer.send('move:start'),

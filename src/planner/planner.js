@@ -207,6 +207,8 @@ function dropZone(el, e) {
 // "bash", "vim".
 function paneName(info) {
   if (info.planner) return 'Plan layout';
+  if (info.launcher) return 'New pane';
+  if (info.pod) return `${info.namespace}/${info.pod}`;
   if (info.droidcam) return 'DroidCam';
   if (info.page) return new URL(info.page).host;
   if (info.device) {
@@ -221,6 +223,8 @@ function paneName(info) {
 // The pane's menu value (see sourceMenu).
 function paneSource(info) {
   if (info.planner) return 'planner';
+  if (info.launcher) return 'launcher';
+  if (info.pod) return `pod:${info.namespace}:${info.pod}`;
   if (info.droidcam) return 'droidcam';
   if (info.page) return `page:${info.page}`;
   if (info.device && info.deviceApp) return appSource(info.device, info.deviceApp.package);
@@ -416,6 +420,21 @@ function fillSourceMenu(select, current, st) {
       option(group, `ls:new:${app}:${tag}`, tag === 'latest' ? `New ${app}` : `New ${app} (${tag})`);
     }
     if (group.children.length) select.appendChild(group);
+  }
+  // The app's Kubernetes pods, the pane's own, and the form that makes a new one.
+  if (st.pods || current === 'launcher' || current?.startsWith('pod:')) {
+    const group = document.createElement('optgroup');
+    group.label = 'Kubernetes pods';
+    const pods = new Map((st.pods ?? []).map((p) => [`pod:${p.namespace}:${p.name}`, p]));
+    if (current?.startsWith('pod:') && !pods.has(current)) {
+      const [, namespace, name] = current.split(':');
+      pods.set(current, { namespace, name, ready: true });
+    }
+    for (const [value, p] of pods) {
+      option(group, value, `${p.namespace}/${p.name}${p.ready ? '' : ` (${(p.phase ?? 'not ready').toLowerCase()})`}`).title = p.app ? `lscr.io/linuxserver/${p.app}:${p.tag}` : '';
+    }
+    option(group, 'launcher', 'New pod…').title = 'A form in the pane: open a pod in a namespace, or make one from any linuxserver image';
+    select.appendChild(group);
   }
   // Per device: its screen, and the new displays the config offers.
   if (st.android) {
@@ -732,7 +751,7 @@ function paneBox(win, id) {
     }, 'close');
   }
   // Only a locked window may lose its last pane; any other window would close.
-  const closeTip = info.app || info.container ? `Close pane (${info.app ?? info.container} keeps running)` : info.session ? 'Close pane (the session keeps running)'
+  const closeTip = info.app || info.container || info.pod ? `Close pane (${info.app ?? info.container ?? `pod ${info.pod}`} keeps running)` : info.session ? 'Close pane (the session keeps running)'
     : info.device && info.display !== null ? 'Close pane and its new display' : 'Close pane';
   button(tools, '✕', closeTip, () => window.planner.close(win.id, id), 'close').disabled =
     win.panes.length === 1 && !win.locked;

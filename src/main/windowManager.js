@@ -11,6 +11,7 @@ const layout = require('./layout');
 const mux = require('./mux');
 const ls = require('./linuxserver');
 const scrcpy = require('./scrcpy');
+const kube = require('./kube');
 
 // Where a dragged pane lands relative to the pane it is dropped on.
 const ZONES = {
@@ -50,14 +51,19 @@ const DROIDCAM_MODULE = '/sys/module/v4l2loopback_dc';
 // (its URL), { planner: true } for the layout planner, { droidcam: true, fillWidth }
 // for DroidCam's camera (fillWidth: its video spans the pane's width, see
 // setCameraFillWidth), or { container: name } for a container labelled
-// lan-terminal.pane=<name> (see linuxserver.js). A saved pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g.
+// lan-terminal.pane=<name> (see linuxserver.js), { pod, namespace } for a Kubernetes
+// pod the app runs (see kube.js), or { launcher: true } for the form that opens one
+// or a shell in a new pane. A saved pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g.
 // { tmux: 'work' }), { linuxserver: app, name, tag }, { scrcpy: serial, display,
 // startApp }, where startApp is the app last opened on a new display, which opens
 // again when the display comes back, { page: url }, the page it was last on,
-// { planner: true }, { droidcam: true, fillWidth } or { container: name }.
+// { planner: true }, { droidcam: true, fillWidth }, { container: name },
+// { pod, namespace } or { launcher: true }.
 // { webtop: name, tag } is the older form for a webtop.
 const leafSource = (s) => {
   if (s?.planner === true) return { planner: true };
+  if (s?.launcher === true) return { launcher: true };
+  if (kube.validName(s?.pod) && kube.validName(s?.namespace)) return { pod: s.pod, namespace: s.namespace };
   if (s?.droidcam === true) return { droidcam: true, fillWidth: s.fillWidth === true };
   if (ls.validName(s?.container)) return { container: s.container };
   if (validPage(s?.page)) return { page: s.page };
@@ -73,9 +79,10 @@ const leafSource = (s) => {
 };
 const isLeaf = (s) => s === 'pane' || leafSource(s) !== null;
 const paneLeaf = (p) =>
-  p.planner ? { planner: true } : p.droidcam ? { droidcam: true, ...(p.fillWidth && { fillWidth: true }) } : p.container ? { container: p.container } : p.page ? { page: p.page } : p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
+  p.planner ? { planner: true } : p.launcher ? { launcher: true } : p.pod ? { pod: p.pod, namespace: p.namespace } : p.droidcam ? { droidcam: true, ...(p.fillWidth && { fillWidth: true }) } : p.container ? { container: p.container } : p.page ? { page: p.page } : p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
 const sameSource = (p, source) =>
   Boolean(p.planner) === Boolean(source?.planner) && Boolean(p.droidcam) === Boolean(source?.droidcam) &&
+  Boolean(p.launcher) === Boolean(source?.launcher) && (p.pod ?? null) === (source?.pod ?? null) && (p.namespace ?? null) === (source?.namespace ?? null) &&
   (p.container ?? null) === (source?.container ?? null) &&
   (p.page ?? null) === (source?.page ?? null) &&
   (p.device ?? null) === (source?.device ?? null) && (p.display ?? null) === (source?.display ?? null) &&
@@ -86,16 +93,21 @@ class WindowManager extends EventEmitter {
   constructor(config) {
     super();
     this.config = config;
-    // id (UUID) -> { id, win, panes, layout, activePane, maximized, locked, moveMode, resizeMode, alwaysOnTop, ready }
+    // id (UUID) -> { id, win, panes, layout, activePane, maximized, pinned, locked, moveMode, resizeMode, alwaysOnTop, ready }
     // layout is null for a window with no panes, which only a locked window can be.
     // maximized is the pane that fills the window for now, or null; it is not saved.
+    // pinned are panes that stay in sight, in their place, over a maximized pane; not saved either.
     // panes: paneId -> { id, kind, title, process, mux, session, app, instance, ... }
     //   kind 'term': { pty, ready, pending, exited } runs a shell or a multiplexer client;
     //     mux and session name the session it is attached to (see mux.js), or are null.
     //   kind 'web': { app, instance, tag, url, error } shows a linuxserver app, e.g.
     //     webtop or chromium (see linuxserver.js); url is null until it answers.
     //     With container instead of app, instance and tag, it shows the container
-    //     labelled lan-terminal.pane=<container>, which something else runs.
+    //     labelled lan-terminal.pane=<container>, which something else runs. With pod
+    //     and namespace, it shows a Kubernetes pod the app runs, through forward, its
+    //     kubectl port-forward (see kube.js).
+    //   kind 'launcher': { launcher: true } is a form in the window that turns the
+    //     pane into a new or existing pod, or a shell.
     //   kind 'scrcpy': { device, display, model, mirror, status, video, fitSize } shows
     //     an Android device's screen or a new display on it (see scrcpy.js); the
     //     window decodes the stream. fitSize is the pane's size in pixels, which a
@@ -116,6 +128,8 @@ class WindowManager extends EventEmitter {
     this.docker = mux.find('docker', config.docker);
     // linuxserver apps as last listed, and the containers labelled lan-terminal.pane.
     this.apps = { images: [], containers: [], labelled: [] };
+    this.kubectl = mux.find('kubectl', config.kubectl);
+    this.pods = []; // the app's Kubernetes pods as last listed (see kube.pods)
     this.adb = scrcpy.findAdb(config.adb);
     this.devices = []; // Android devices as last listed: [{ serial, model }]
     this.scrcpyTools = null; // the installed scrcpy's { version, server }, once found
@@ -277,11 +291,57 @@ class WindowManager extends EventEmitter {
         console.warn('pane:resize-split:', err.message);
       }
     });
-    // A click in resize mode: a new shell on that side of the pane.
+    // A click in resize mode: a new pane on that side of the pane, with the form that
+    // picks what it shows.
     ipcMain.on('pane:split', (event, paneId, side) => {
       const term = this.#fromSender(event);
       const place = Object.hasOwn(ZONES, side) && ZONES[side];
-      if (term && place) this.splitPane(term.id, paneId, place.dir, place.before);
+      if (term && place) this.splitPane(term.id, paneId, place.dir, place.before, { launcher: true });
+    });
+    // The tools on a pane in resize mode: close, pin over a maximized pane, maximize
+    // (paneId null puts the panes back), and dropping a pane on another (see movePane).
+    ipcMain.on('pane:close', (event, paneId) => {
+      const term = this.#fromSender(event);
+      if (term) this.closePane(term.id, paneId);
+    });
+    ipcMain.on('pane:pin', (event, paneId, on) => {
+      const term = this.#fromSender(event);
+      if (term) this.pinPane(term.id, paneId, Boolean(on));
+    });
+    ipcMain.on('pane:maximize', (event, paneId) => {
+      const term = this.#fromSender(event);
+      if (term) this.maximizePane(term.id, paneId ?? null);
+    });
+    ipcMain.on('pane:move', (event, paneId, targetId, zone) => {
+      const term = this.#fromSender(event);
+      try {
+        if (term) this.movePane(term.id, paneId, targetId, zone);
+      } catch (err) {
+        console.warn('pane:move:', err.message);
+      }
+    });
+    // A launcher pane's form: what it offers, a new namespace, and the choice that
+    // turns the pane into a pod ('pod:…', see #resolvePod) or a shell.
+    ipcMain.handle('launcher:state', (event) => (this.#fromSender(event) ? this.launcherState() : null));
+    ipcMain.handle('launcher:namespace', async (event, name) => {
+      if (!this.#fromSender(event)) return null;
+      try {
+        await this.createNamespace(name);
+        return null;
+      } catch (err) {
+        return err.message;
+      }
+    });
+    ipcMain.handle('launcher:open', async (event, paneId, choice) => {
+      const term = this.#fromSender(event);
+      if (term?.panes.get(paneId)?.kind !== 'launcher') return 'the pane is no longer a new pane';
+      if (!(choice === 'shell' || (typeof choice === 'string' && choice.startsWith('pod:')))) return 'unknown choice';
+      try {
+        await this.setPaneSource(term.id, paneId, choice);
+        return null;
+      } catch (err) {
+        return err.message;
+      }
     });
     ipcMain.on('pane:focus', (event, paneId) => {
       const term = this.#fromSender(event);
@@ -418,7 +478,7 @@ class WindowManager extends EventEmitter {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
       const deviceApp = p.foreground ? { package: p.foreground, name: this.#appName(p.device, p.foreground) } : null;
-      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, container: p.container ?? null, page: p.page ?? null, planner: Boolean(p.planner), droidcam: Boolean(p.droidcam), fillWidth: Boolean(p.fillWidth), device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, deviceApp, model: p.model ?? null, pid: p.pty?.pid ?? null };
+      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, container: p.container ?? null, pod: p.pod ?? null, namespace: p.namespace ?? null, launcher: Boolean(p.launcher), page: p.page ?? null, planner: Boolean(p.planner), droidcam: Boolean(p.droidcam), fillWidth: Boolean(p.fillWidth), device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, deviceApp, model: p.model ?? null, pid: p.pty?.pid ?? null };
     });
   }
 
@@ -430,6 +490,8 @@ class WindowManager extends EventEmitter {
       muxes: [...this.muxes.keys()].map((m) => ({ id: m, sessions: [...(this.sessions.get(m)?.keys() ?? [])] })),
       // Pulled linuxserver app images and the app's containers, or null without docker.
       linuxserver: this.docker ? this.apps : null,
+      // The app's Kubernetes pods, or null without kubectl.
+      pods: this.kubectl ? this.pods : null,
       // Connected Android devices and the new displays the menu offers on each, or
       // null without adb.
       // and the apps each one has had on top of a pane that still run on it.
@@ -615,14 +677,15 @@ class WindowManager extends EventEmitter {
     // Web panes have no pty to describe them, so the renderer gets what to show.
     const panes = {};
     for (const p of term.panes.values()) {
-      if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: p.container ?? `${p.app} ${p.instance} (${p.tag})` };
+      if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: p.pod ? `${p.namespace}/${p.pod}` : p.container ?? `${p.app} ${p.instance} (${p.tag})` };
+      if (p.kind === 'launcher') panes[p.id] = { kind: 'launcher' };
       if (p.kind === 'page') panes[p.id] = { kind: 'page', url: p.page };
       if (p.kind === 'planner') panes[p.id] = { kind: 'planner', url: PLANNER_PANE_URL };
       // Spanning the width only applies beside other panes; alone, it shows it all.
       if (p.kind === 'camera') panes[p.id] = { kind: 'camera', name: 'Droidcam', label: 'DroidCam', fillWidth: p.fillWidth && layout.leaves(term.layout).length > 1 };
       if (p.kind === 'scrcpy') panes[p.id] = { kind: 'scrcpy', status: p.status, fit: scrcpy.isFit(p.display), captureMouse: p.mirror?.capturesMouse ?? false };
     }
-    term.win.webContents.send('layout', { layout: term.layout, active: term.activePane, maximized: term.maximized, panes });
+    term.win.webContents.send('layout', { layout: term.layout, active: term.activePane, maximized: term.maximized, pinned: [...term.pinned], panes });
   }
 
   // Every pane edit lands here: the capture window and the planner redraw from the
@@ -820,6 +883,71 @@ class WindowManager extends EventEmitter {
     return id;
   }
 
+  // A launcher pane is a form the window draws (see createLauncherPane in the renderer).
+  #spawnLauncherPane(term) {
+    const id = crypto.randomUUID();
+    term.panes.set(id, { id, kind: 'launcher', launcher: true, mux: null, session: null, app: null, instance: null, title: 'New pane', process: 'launcher', exited: false });
+    return id;
+  }
+
+  // A pod pane makes its pod first if newPod says how, waits for it to be ready,
+  // and shows its UI through kubectl port-forward. The forward ends when the pod's
+  // container restarts or the pod goes, so the pane then says so and tries again
+  // every few seconds. The pod keeps running when the pane closes.
+  #spawnPodPane(term, { pod, namespace, newPod = null }) {
+    const id = crypto.randomUUID();
+    const label = `${namespace}/${pod}`;
+    const pane = { id, kind: 'web', pod, namespace, url: null, error: null, forward: null, retry: null, mux: null, session: null, app: null, instance: null, title: pod, process: 'pod', exited: false };
+    term.panes.set(id, pane);
+    const show = (url, error) => {
+      if (pane.exited || term.panes.get(id) !== pane) return;
+      pane.url = url;
+      pane.error = error;
+      this.#sendLayout(term);
+    };
+    const retry = (err) => {
+      pane.forward = null;
+      if (pane.exited) return;
+      console.warn(`pod ${label}:`, err.message);
+      show(null, `${err.message}. Trying again…`);
+      pane.retry = setTimeout(connect, 3000);
+    };
+    const connect = async () => {
+      pane.retry = null;
+      if (pane.exited) return;
+      if (!this.kubectl) return show(null, 'kubectl is not installed');
+      try {
+        if (newPod) {
+          await kube.create(this.kubectl, namespace, pod, newPod.app, newPod.tag, newPod.port);
+          newPod = null;
+          this.refreshSessions();
+        }
+        show(null, null);
+        await kube.waitReady(this.kubectl, namespace, pod);
+        const port = (await kube.pods(this.kubectl)).find((p) => p.namespace === namespace && p.name === pod)?.port ?? kube.DEFAULT_PORT;
+        if (pane.exited) return;
+        const { child, url } = await kube.forward(this.kubectl, namespace, pod, port);
+        if (pane.exited) return child.kill();
+        pane.forward = child;
+        child.on('exit', () => {
+          if (pane.forward === child) retry(new Error('the connection to the pod ended'));
+        });
+        await ls.waitForHttp(url, 90000);
+        show(url, null);
+      } catch (err) {
+        // A pod that could not be made is not tried again: the form is the place to fix it.
+        if (newPod) return show(null, err.message);
+        // Out of pane.forward first, so its exit does not try again a second time.
+        const child = pane.forward;
+        pane.forward = null;
+        child?.kill();
+        retry(err);
+      }
+    };
+    connect();
+    return id;
+  }
+
   // Reloads a page pane, e.g. after a change to the page on the server.
   reloadPage(id, paneId) {
     const term = this.get(id);
@@ -850,6 +978,8 @@ class WindowManager extends EventEmitter {
 
   #makePane(term, source) {
     if (source?.planner) return this.#spawnPlannerPane(term);
+    if (source?.launcher) return this.#spawnLauncherPane(term);
+    if (source?.pod || source?.newPod) return this.#spawnPodPane(term, source);
     if (source?.droidcam) return this.#spawnCameraPane(term, source);
     if (source?.page) return this.#spawnPagePane(term, source);
     if (source?.device) return this.#spawnScrcpyPane(term, source);
@@ -863,24 +993,27 @@ class WindowManager extends EventEmitter {
     pane.exited = true;
     clearTimeout(pane.retry);
     pane.mirror?.stop();
+    pane.forward?.kill();
   }
 
   // Lists every installed multiplexer's sessions, the linuxserver apps and the
   // Android devices. The planner shows them in each pane's menu.
   async refreshSessions() {
-    const [lists, images, containers, labelled, devices] = await Promise.all([
+    const [lists, images, containers, labelled, devices, pods] = await Promise.all([
       Promise.all([...this.muxes].map(async ([m, bin]) => [m, await mux.list(m, bin)])),
       this.docker ? ls.images(this.docker) : [],
       this.docker ? ls.list(this.docker) : [],
       this.docker ? ls.labelled(this.docker) : [],
       this.adb ? scrcpy.devices(this.adb) : [],
+      this.kubectl ? kube.pods(this.kubectl).catch(() => this.pods) : [],
     ]);
-    const next = { sessions: new Map(lists), apps: { images, containers, labelled }, devices };
-    const key = ({ sessions, apps, devices }) => JSON.stringify([[...sessions].map(([m, names]) => [m, [...names]]), apps, devices]);
+    const next = { sessions: new Map(lists), apps: { images, containers, labelled }, devices, pods };
+    const key = ({ sessions, apps, devices, pods }) => JSON.stringify([[...sessions].map(([m, names]) => [m, [...names]]), apps, devices, pods]);
     if (key(next) === key(this)) return;
     this.sessions = next.sessions;
     this.apps = next.apps;
     this.devices = next.devices;
+    this.pods = next.pods;
     this.#sendPlanners();
   }
 
@@ -897,7 +1030,9 @@ class WindowManager extends EventEmitter {
   async #resolveSource(source) {
     if (source === 'shell') return null;
     if (source === 'planner') return { planner: true };
+    if (source === 'launcher') return { launcher: true };
     if (source === 'droidcam') return { droidcam: true };
+    if (typeof source === 'string' && source.startsWith('pod:')) return this.#resolvePod(source.slice(4).split(':'));
     if (typeof source === 'string' && source.startsWith('page:')) {
       const page = source.slice(5);
       if (!validPage(page)) throw new Error('a web page must be an http or https URL');
@@ -966,6 +1101,52 @@ class WindowManager extends EventEmitter {
     return { app, instance, tag };
   }
 
+  // 'pod:<namespace>:<name>' opens a pod; 'pod:new:<namespace>:<app>:<tag>:<port>'
+  // makes one, named <app>-<n> with the smallest n free in the namespace, and makes
+  // the namespace the one the next new pod form starts on.
+  async #resolvePod(parts) {
+    if (!this.kubectl) throw new Error('kubectl is not installed');
+    if (parts[0] !== 'new') {
+      const [namespace, pod] = parts;
+      if (parts.length !== 2 || !kube.validName(namespace) || !kube.validName(pod)) throw new Error('bad pod');
+      return { pod, namespace };
+    }
+    const [, namespace, app, tag, port] = parts;
+    if (parts.length !== 5 || !kube.validName(namespace) || !ls.validApp(app) || !ls.validTag(tag) || !kube.validPort(Number(port))) {
+      throw new Error('bad pod image');
+    }
+    await this.refreshSessions();
+    const taken = new Set(this.pods.filter((p) => p.namespace === namespace).map((p) => p.name));
+    for (const term of this.terminals.values()) for (const p of term.panes.values()) if (p.namespace === namespace) taken.add(p.pod);
+    this.config.podNamespace = namespace;
+    saveConfig(this.config);
+    return { pod: kube.freeName(app, taken), namespace, newPod: { app, tag, port: Number(port) } };
+  }
+
+  // What a launcher pane's form offers: the namespaces, the one to start on (where the
+  // last new pod went, while it exists), linuxserver's images and the app's pods.
+  // Whatever cannot be listed comes back empty, with the reason in errors.
+  async launcherState() {
+    if (!this.kubectl) return { namespaces: [], namespace: null, images: [], pods: [], errors: ['kubectl is not installed'] };
+    const errors = [];
+    const failed = (fallback) => (err) => {
+      errors.push(err.message);
+      return fallback;
+    };
+    const [namespaces, images, pods] = await Promise.all([
+      kube.namespaces(this.kubectl).catch(failed([])),
+      kube.catalog().catch(failed([])),
+      kube.pods(this.kubectl).catch(failed(this.pods)),
+    ]);
+    const last = this.config.podNamespace;
+    return { namespaces, namespace: namespaces.includes(last) ? last : namespaces.includes('default') ? 'default' : namespaces[0] ?? null, images, pods, errors };
+  }
+
+  async createNamespace(name) {
+    if (!this.kubectl) throw new Error('kubectl is not installed');
+    await kube.createNamespace(this.kubectl, name);
+  }
+
   // Stops an app's container and removes the panes that showed it.
   async stopApp(app, instance) {
     if (!this.docker) throw new Error('docker is not installed');
@@ -995,6 +1176,8 @@ class WindowManager extends EventEmitter {
     term.layout = tree;
     term.activePane = tree ? active : null;
     if (!tree || !layout.leaves(tree).includes(term.maximized)) term.maximized = null;
+    const leaves = new Set(tree ? layout.leaves(tree) : []);
+    for (const p of term.pinned) if (!leaves.has(p)) term.pinned.delete(p);
   }
 
   // In any pane, Ctrl+Shift+Alt+Z maximizes the active pane or puts it back,
@@ -1093,7 +1276,7 @@ class WindowManager extends EventEmitter {
       });
     });
 
-    const term = { id, win, panes: new Map(), layout: null, activePane: null, maximized: null, locked: Boolean(locked), moveMode: false, resizeMode: false, alwaysOnTop: false, ready: false };
+    const term = { id, win, panes: new Map(), layout: null, activePane: null, maximized: null, pinned: new Set(), locked: Boolean(locked), moveMode: false, resizeMode: false, alwaysOnTop: false, ready: false };
     this.terminals.set(id, term);
     if (!(empty && term.locked)) {
       term.layout = saved
@@ -1250,6 +1433,7 @@ class WindowManager extends EventEmitter {
     term.panes.delete(paneId);
     this.#endPane(old);
     if (term.maximized === paneId) term.maximized = newId;
+    if (term.pinned.has(paneId)) term.pinned.add(newId);
     this.#setLayout(term, layout.replacePane(term.layout, paneId, newId), term.activePane === paneId ? newId : term.activePane);
     this.#pushLayout(term);
     return true;
@@ -1320,11 +1504,12 @@ class WindowManager extends EventEmitter {
     return true;
   }
 
-  // before puts the new pane left of (row) or above (col) paneId.
-  splitPane(id, paneId, dir, before = false) {
+  // before puts the new pane left of (row) or above (col) paneId. The new pane is a
+  // shell, or what source says (see leafSource).
+  splitPane(id, paneId, dir, before = false, source = null) {
     const term = this.get(id);
     if (!term || !term.panes.has(paneId)) return false;
-    const newId = this.#spawnPane(term);
+    const newId = this.#makePane(term, source);
     try {
       term.layout = layout.splitPane(term.layout, paneId, dir, newId, before);
     } catch (err) {
@@ -1395,6 +1580,16 @@ class WindowManager extends EventEmitter {
     if (paneId) term.activePane = paneId;
     this.#sendLayout(term);
     this.#changed();
+    return true;
+  }
+
+  // A pinned pane stays in sight over a maximized one; see #setLayout.
+  pinPane(id, paneId, on) {
+    const term = this.get(id);
+    if (!term || !term.panes.has(paneId)) return false;
+    if (on) term.pinned.add(paneId);
+    else term.pinned.delete(paneId);
+    this.#sendLayout(term);
     return true;
   }
 
