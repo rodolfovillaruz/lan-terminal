@@ -201,8 +201,10 @@ html, body {
 #resize-overlay .split-preview[hidden] { display: none; }
 
 /* A new pane's form (see createLauncherPane). */
-.pane.launcher { overflow: auto; padding: 16px 20px; color: rgba(230, 230, 230, 0.9); font: 14px 'JetBrainsMono NL NFM', monospace; }
-.launcher form { max-width: 640px; }
+/* The form sits in the middle of the pane; auto margins, unlike centring the flex box,
+   leave it scrollable from its top when the pane is shorter than it. */
+.pane.launcher { display: flex; overflow: auto; padding: 16px 20px; color: rgba(230, 230, 230, 0.9); font: 14px 'JetBrainsMono NL NFM', monospace; }
+.launcher form { margin: auto; width: 100%; max-width: 640px; }
 .launcher h2 { margin: 0 0 12px; font-size: 18px; }
 .launcher h3 { margin: 18px 0 8px; font-size: 14px; color: rgba(80, 160, 255, 0.95); }
 .launcher .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
