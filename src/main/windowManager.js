@@ -292,11 +292,13 @@ class WindowManager extends EventEmitter {
       }
     });
     // A click in resize mode: a new pane on that side of the pane, with the form that
-    // picks what it shows.
+    // picks what it shows. Resize mode ends, so the new pane takes the keyboard.
     ipcMain.on('pane:split', (event, paneId, side) => {
       const term = this.#fromSender(event);
       const place = Object.hasOwn(ZONES, side) && ZONES[side];
-      if (term && place) this.splitPane(term.id, paneId, place.dir, place.before, { launcher: true });
+      if (term && place && this.splitPane(term.id, paneId, place.dir, place.before, { launcher: true })) {
+        this.setResizeMode(term.id, false);
+      }
     });
     // The tools on a pane in resize mode: close, pin over a maximized pane, maximize
     // (paneId null puts the panes back), reload, and dropping a pane on another (see movePane).
