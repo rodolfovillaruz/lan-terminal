@@ -1204,7 +1204,7 @@ class WindowManager extends EventEmitter {
   }
 
   // saved is a pane shape; empty: true opens it with no panes (a locked window saved
-  // empty). Without either the window starts with one shell.
+  // empty). Without either the window starts with one New pane form.
   create({ layout: saved, empty = false, locked = false } = {}) {
     const id = crypto.randomUUID();
     const bounds = this.#fullBounds();
@@ -1287,7 +1287,7 @@ class WindowManager extends EventEmitter {
     if (!(empty && term.locked)) {
       term.layout = saved
         ? layout.hydrate(saved, (leaf) => this.#makePane(term, leafSource(leaf)), isLeaf)
-        : layout.pane(this.#spawnPane(term));
+        : layout.pane(this.#makePane(term, { launcher: true }));
       term.activePane = layout.leaves(term.layout)[0];
     }
 

@@ -23,7 +23,7 @@ The first window opens at (0,0), sized to the primary display (2560×1440 on a 2
 - turn presenter mode on or off
 - quit
 
-Closing every window does **not** quit the app. Use **Quit** from the tray. Typing `exit` in a shell closes that window. Launching the app a second time opens a new window in the instance that is already running.
+Closing every window does **not** quit the app. Use **Quit** from the tray. Typing `exit` in a shell closes that window. Launching the app a second time opens a new window in the instance that is already running. A new window starts with one **New pane** form (see Kubernetes pods below), where **Shell instead** gives you a shell.
 
 ## Run as a service
 
@@ -134,7 +134,7 @@ Its pane shows the UI like an app's, and picking it starts the container if it i
 
 Each running app holds from several hundred MB (one app) to a few GB (a desktop) of memory, so stop the ones you aren't using.
 
-The same images can run as **Kubernetes pods**, on the cluster that `kubectl` talks to. A pane added in resize mode starts as a **New pane** form (the menu's **New pod…** turns any pane into one):
+The same images can run as **Kubernetes pods**, on the cluster that `kubectl` talks to. A new window's first pane, and a pane added in resize mode, start as a **New pane** form (the menu's **New pod…** turns any pane into one):
 
 - **Namespace** picks where the pods are. It starts on the namespace the last new pod went to (`podNamespace` in the config), or `default`. **New namespace…** creates one.
 - **Open a pod** lists the pods the app made in that namespace; click one to show it.
