@@ -86,7 +86,7 @@ class WindowManager extends EventEmitter {
   constructor(config) {
     super();
     this.config = config;
-    // id (UUID) -> { id, win, panes, layout, activePane, maximized, locked, moveMode, alwaysOnTop, ready }
+    // id (UUID) -> { id, win, panes, layout, activePane, maximized, locked, moveMode, resizeMode, alwaysOnTop, ready }
     // layout is null for a window with no panes, which only a locked window can be.
     // maximized is the pane that fills the window for now, or null; it is not saved.
     // panes: paneId -> { id, kind, title, process, mux, session, app, instance, ... }
@@ -196,6 +196,7 @@ class WindowManager extends EventEmitter {
       term.ready = true;
       this.#sendLayout(term);
       if (term.moveMode) event.sender.send('moveMode', true);
+      if (term.resizeMode) event.sender.send('resizeMode', true);
     });
     // A pane's xterm exists: flush the output it missed.
     ipcMain.on('pty:ready', (event, paneId) => {
@@ -265,8 +266,8 @@ class WindowManager extends EventEmitter {
       }
       if (changed) this.#changed();
     });
-    // A camera pane's height, fitted to its video (see fitCameraHeight): new sizes for
-    // the split above it.
+    // New sizes for a split: a camera pane's height fitted to its video (see
+    // fitCameraHeight), or a divider dragged in resize mode.
     ipcMain.on('pane:resize-split', (event, splitPath, sizes) => {
       const term = this.#fromSender(event);
       if (!term?.layout) return;
@@ -286,6 +287,10 @@ class WindowManager extends EventEmitter {
     ipcMain.on('moveMode:exit', (event) => {
       const term = this.#fromSender(event);
       if (term) this.setMoveMode(term.id, false);
+    });
+    ipcMain.on('resizeMode:exit', (event) => {
+      const term = this.#fromSender(event);
+      if (term) this.setResizeMode(term.id, false);
     });
     // Move-mode drag. KWin's own window drag (app-region: drag) stops at the top edge,
     // but it leaves positions the app sets alone, so follow the cursor here instead.
@@ -986,8 +991,8 @@ class WindowManager extends EventEmitter {
     if (!tree || !layout.leaves(tree).includes(term.maximized)) term.maximized = null;
   }
 
-  // In any pane, Ctrl+Shift+Alt+Z maximizes the active pane or puts it back, and
-  // Ctrl+Shift+Alt+F turns always on top on or off.
+  // In any pane, Ctrl+Shift+Alt+Z maximizes the active pane or puts it back,
+  // Ctrl+Shift+Alt+F turns always on top on or off, and Ctrl+Shift+Alt+R resize mode.
   #windowKey(term, input) {
     if (input.type !== 'keyDown' || input.isAutoRepeat) return false;
     if (!(input.control && input.shift && input.alt && !input.meta)) return false;
@@ -995,6 +1000,8 @@ class WindowManager extends EventEmitter {
       if (term.activePane) this.maximizePane(term.id, term.maximized ? null : term.activePane);
     } else if (input.code === 'KeyF') {
       this.setAlwaysOnTop(term.id, !term.alwaysOnTop);
+    } else if (input.code === 'KeyR') {
+      this.setResizeMode(term.id, !term.resizeMode);
     } else {
       return false;
     }
@@ -1080,7 +1087,7 @@ class WindowManager extends EventEmitter {
       });
     });
 
-    const term = { id, win, panes: new Map(), layout: null, activePane: null, maximized: null, locked: Boolean(locked), moveMode: false, alwaysOnTop: false, ready: false };
+    const term = { id, win, panes: new Map(), layout: null, activePane: null, maximized: null, locked: Boolean(locked), moveMode: false, resizeMode: false, alwaysOnTop: false, ready: false };
     this.terminals.set(id, term);
     if (!(empty && term.locked)) {
       term.layout = saved
@@ -1263,6 +1270,16 @@ class WindowManager extends EventEmitter {
     term.win.webContents.send('moveMode', term.moveMode);
     if (term.moveMode) this.focus(id);
     this.#changed();
+    return true;
+  }
+
+  // Resize mode puts handles on the lines between panes, to drag like the planner's.
+  setResizeMode(id, enabled) {
+    const term = this.get(id);
+    if (!term) return false;
+    term.resizeMode = Boolean(enabled);
+    term.win.webContents.send('resizeMode', term.resizeMode);
+    if (term.resizeMode) this.focus(id);
     return true;
   }
 

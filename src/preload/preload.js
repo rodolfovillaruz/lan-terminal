@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld('terminal', {
   onMoveMode: (cb) => ipcRenderer.on('moveMode', (_e, enabled) => cb(enabled)),
   onPresenterMode: (cb) => ipcRenderer.on('presenterMode', (_e, enabled) => cb(enabled)),
   exitMoveMode: () => ipcRenderer.send('moveMode:exit'),
+  onResizeMode: (cb) => ipcRenderer.on('resizeMode', (_e, enabled) => cb(enabled)),
+  exitResizeMode: () => ipcRenderer.send('resizeMode:exit'),
   moveStart: () => ipcRenderer.send('move:start'),
   moveDrag: () => ipcRenderer.send('move:drag'),
   moveEnd: () => ipcRenderer.send('move:end'),

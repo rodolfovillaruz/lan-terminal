@@ -128,3 +128,38 @@ html, body {
   opacity: 0.8;
   margin-top: 6px;
 }
+
+/* Resize mode: handles over the lines between panes, under the move overlay. */
+#resize-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(30, 120, 255, 0.08);
+  outline: 4px dotted rgba(80, 160, 255, 0.9);
+  outline-offset: -4px;
+}
+#resize-overlay[hidden] { display: none; }
+#resize-overlay .label {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
+  font: bold 20px 'JetBrainsMono NL NFM', monospace;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 10px 20px;
+  border-radius: 10px;
+  text-align: center;
+  white-space: nowrap;
+}
+#resize-overlay .label span { display: block; font-size: 14px; font-weight: normal; opacity: 0.8; margin-top: 4px; }
+#resize-overlay.presenter { background: none; outline: none; }
+#resize-overlay.presenter .label { display: none; }
+#resize-overlay .handle { position: absolute; }
+#resize-overlay .handle.row { cursor: col-resize; }
+#resize-overlay .handle.col { cursor: row-resize; }
+#resize-overlay .handle::after { content: ''; position: absolute; border-radius: 3px; background: rgba(80, 160, 255, 0.6); }
+#resize-overlay .handle.row::after { inset: 25% 3px; }
+#resize-overlay .handle.col::after { inset: 3px 25%; }
+#resize-overlay .handle:hover::after, #resize-overlay .handle.dragging::after { background: rgba(80, 160, 255, 1); }
+#resize-overlay.presenter .handle::after { background: none; }

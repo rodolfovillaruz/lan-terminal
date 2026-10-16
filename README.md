@@ -107,6 +107,8 @@ To show one pane on its own for a while, **maximize** it: the card's **⛶** but
 
 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>, in any pane, keeps the window **always on top** (above everything, covering the panel, and out of the taskbar and Alt+Tab) or stops it, like `POST /windows/:id/always-on-top`.
 
+<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>R</kbd>, in any pane, turns **resize mode** on or off. It puts a handle on each line between the window's panes; drag one to resize the panes on either side, as in the planner. The panes take their new size when you let go. While it is on, the panes get no mouse or keyboard input; press the same keys or Esc to turn it off. Presenter mode hides its tint, label and handles, leaving only the resize cursor over each line.
+
 In a shell or session pane, select text with the mouse and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> to copy it to the clipboard. <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> pastes the clipboard into the pane.
 
 Each pane has a menu that picks what it shows: a **Shell**, or a session of [ptmux](../pseudo-terminal), tmux or GNU screen, either one that is running or a new one (named with the next free number). A session pane runs the multiplexer's client (`ptmux attach`, `tmux new-session -A`, `screen -x`), so closing the pane, switching it to something else, or detaching inside it only detaches: the session keeps running, and any pane in any window can pick it up again. Sessions are saved with the layout. On the next start their panes reattach, and a session that no longer exists (after a reboot, say) starts again under the same name. The menu lists only the multiplexers the app can find.

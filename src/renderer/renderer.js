@@ -17,6 +17,7 @@ async function main() {
   const root = document.getElementById('terminal');
   const webLayer = document.getElementById('apps');
   const overlay = document.getElementById('move-overlay');
+  const resizeOverlay = document.getElementById('resize-overlay');
   // paneId -> { el, syncSize, focus, dispose }, plus term for terminal panes and
   // update for web, page, planner and camera panes. el is what sits in the split tree.
   const panes = new Map();
@@ -706,16 +707,20 @@ async function main() {
     const target = panes.get(state.active);
     if (target && (state.active !== active || !target.el.contains(document.activeElement))) {
       active = state.active;
-      if (overlay.hidden) target.focus();
+      if (overlay.hidden && resizeOverlay.hidden) target.focus();
     }
+    drawHandles();
   });
 
-  // Presenter mode hides the overlay's tint, outline and label; only the cursor shows move mode.
-  overlay.classList.toggle('presenter', cfg.presenterMode);
-  window.terminal.onPresenterMode((enabled) => overlay.classList.toggle('presenter', enabled));
+  // Presenter mode hides the overlays' tint, outline and label; only the cursor shows
+  // move mode, and resize mode's handles show only as the cursor over them.
+  for (const o of [overlay, resizeOverlay]) o.classList.toggle('presenter', cfg.presenterMode);
+  window.terminal.onPresenterMode((enabled) => {
+    for (const o of [overlay, resizeOverlay]) o.classList.toggle('presenter', enabled);
+  });
   window.terminal.onMoveMode((enabled) => {
     overlay.hidden = !enabled;
-    if (!enabled) panes.get(active)?.focus();
+    if (!enabled && resizeOverlay.hidden) panes.get(active)?.focus();
   });
   // The main process reads the cursor and moves the window; this only reports the drag.
   let dragging = false;
@@ -736,12 +741,91 @@ async function main() {
   overlay.addEventListener('pointerup', endDrag);
   overlay.addEventListener('pointercancel', endDrag);
   overlay.addEventListener('lostpointercapture', endDrag);
+  // Resize mode: a handle over each line between panes, dragged like the planner's
+  // gutters. The line moves here as it is dragged, and the split's new sizes go to the
+  // main process on release, so the panes are not rebuilt under the pointer.
+  const HANDLE = 8; // px
+  let resizing = null; // { h, start, length, sizes, next }
+  const handle = (node, box, items, path, i) => {
+    const row = node.dir === 'row';
+    const h = document.createElement('div');
+    h.className = `handle ${node.dir}`;
+    const place = () => {
+      const r = items[i + 1].getBoundingClientRect();
+      const b = box.getBoundingClientRect();
+      Object.assign(h.style, row
+        ? { left: `${r.left - HANDLE / 2}px`, top: `${b.top}px`, width: `${HANDLE}px`, height: `${b.height}px` }
+        : { left: `${b.left}px`, top: `${r.top - HANDLE / 2}px`, width: `${b.width}px`, height: `${HANDLE}px` });
+    };
+    place();
+    h.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      h.setPointerCapture(e.pointerId);
+      h.classList.add('dragging');
+      const b = box.getBoundingClientRect();
+      resizing = { h, start: row ? e.clientX : e.clientY, length: row ? b.width : b.height, sizes: node.sizes.slice(), next: null };
+    });
+    h.addEventListener('pointermove', (e) => {
+      if (resizing?.h !== h) return;
+      const pos = row ? e.clientX : e.clientY;
+      const pair = resizing.sizes[i] + resizing.sizes[i + 1];
+      const min = 0.05;
+      const a = Math.min(pair - min, Math.max(min, resizing.sizes[i] + (pos - resizing.start) / resizing.length));
+      const sizes = resizing.sizes.slice();
+      sizes[i] = a;
+      sizes[i + 1] = pair - a;
+      items[i].style.flex = `${sizes[i]} 1 0`;
+      items[i + 1].style.flex = `${sizes[i + 1]} 1 0`;
+      resizing.next = sizes;
+      place();
+    });
+    const end = () => {
+      if (resizing?.h !== h) return;
+      const { next } = resizing;
+      resizing = null;
+      h.classList.remove('dragging');
+      if (next) window.terminal.resizeSplit(path, next);
+      drawHandles();
+    };
+    h.addEventListener('pointerup', end);
+    h.addEventListener('pointercancel', end);
+    h.addEventListener('lostpointercapture', end);
+    return h;
+  };
+  // Walks the layout and the split boxes drawn from it together. None while a pane is
+  // maximized: its lines are out of sight.
+  function drawHandles() {
+    if (resizing) return;
+    for (const h of resizeOverlay.querySelectorAll('.handle')) h.remove();
+    if (resizeOverlay.hidden || !drawn || root.classList.contains('maximized')) return;
+    const walk = (node, el, path) => {
+      if (node.type === 'pane') return;
+      const items = [...el.children];
+      node.children.forEach((child, i) => {
+        walk(child, items[i], [...path, i]);
+        if (i > 0) resizeOverlay.appendChild(handle(node, el, items, path, i - 1));
+      });
+    };
+    walk(drawn, root.firstElementChild, []);
+  }
+  window.addEventListener('resize', drawHandles);
+  window.terminal.onResizeMode((enabled) => {
+    resizeOverlay.hidden = !enabled;
+    if (enabled) document.activeElement?.blur();
+    else if (overlay.hidden) panes.get(active)?.focus();
+    drawHandles();
+  });
+
   window.addEventListener('keydown', (e) => {
+    if (!resizeOverlay.hidden && overlay.hidden && e.key === 'Escape') {
+      window.terminal.exitResizeMode();
+    }
     if (!overlay.hidden && e.key === 'Escape') {
       window.terminal.exitMoveMode();
     }
-    if (!overlay.hidden) {
-      // Keyboard input does not reach the shell while moving.
+    if (!overlay.hidden || !resizeOverlay.hidden) {
+      // Keyboard input does not reach the shell while moving or resizing.
       e.preventDefault();
       e.stopPropagation();
     }
