@@ -893,7 +893,13 @@ async function main() {
   window.terminal.onPresenterMode((enabled) => {
     for (const o of [overlay, resizeOverlay]) o.classList.toggle('presenter', enabled);
   });
+  // A pane gone fullscreen (webtop's fullscreen button, say) is in the top layer, over
+  // everything else in the window, the overlays too, so the overlays end it first.
+  const leaveFullscreen = () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  };
   window.terminal.onMoveMode((enabled) => {
+    if (enabled) leaveFullscreen();
     overlay.hidden = !enabled;
     if (!enabled && resizeOverlay.hidden) panes.get(active)?.focus();
   });
@@ -1147,6 +1153,7 @@ async function main() {
   }
   window.addEventListener('resize', drawHandles);
   window.terminal.onResizeMode((enabled) => {
+    if (enabled) leaveFullscreen();
     resizeOverlay.hidden = !enabled;
     if (enabled) document.activeElement?.blur();
     else if (overlay.hidden) panes.get(active)?.focus();
