@@ -299,7 +299,7 @@ class WindowManager extends EventEmitter {
       if (term && place) this.splitPane(term.id, paneId, place.dir, place.before, { launcher: true });
     });
     // The tools on a pane in resize mode: close, pin over a maximized pane, maximize
-    // (paneId null puts the panes back), and dropping a pane on another (see movePane).
+    // (paneId null puts the panes back), reload, and dropping a pane on another (see movePane).
     ipcMain.on('pane:close', (event, paneId) => {
       const term = this.#fromSender(event);
       if (term) this.closePane(term.id, paneId);
@@ -307,6 +307,10 @@ class WindowManager extends EventEmitter {
     ipcMain.on('pane:pin', (event, paneId, on) => {
       const term = this.#fromSender(event);
       if (term) this.pinPane(term.id, paneId, Boolean(on));
+    });
+    ipcMain.on('pane:reload', (event, paneId) => {
+      const term = this.#fromSender(event);
+      if (term) this.reloadPane(term.id, paneId);
     });
     ipcMain.on('pane:maximize', (event, paneId) => {
       const term = this.#fromSender(event);
@@ -1427,8 +1431,16 @@ class WindowManager extends EventEmitter {
       return old.foreground === source.startApp || this.openDeviceApp(id, paneId, source.startApp);
     }
     if (!source?.move && sameSource(old, source)) return false;
-    const newId = this.#makePane(term, source);
+    const newId = this.#swapPane(term, paneId, source);
     if (source?.move) this.#claimApp(term.panes.get(newId), source.startApp);
+    return true;
+  }
+
+  // Ends pane paneId and puts a new pane showing source in its place, which keeps its
+  // size, and its being active, maximized or pinned. Returns the new pane's id.
+  #swapPane(term, paneId, source) {
+    const old = term.panes.get(paneId);
+    const newId = this.#makePane(term, source);
     // Out of the map first, so the old pty's exit does not remove the pane's place.
     term.panes.delete(paneId);
     this.#endPane(old);
@@ -1436,6 +1448,16 @@ class WindowManager extends EventEmitter {
     if (term.pinned.has(paneId)) term.pinned.add(newId);
     this.#setLayout(term, layout.replacePane(term.layout, paneId, newId), term.activePane === paneId ? newId : term.activePane);
     this.#pushLayout(term);
+    return newId;
+  }
+
+  // Closes a pane and opens what it showed again, in the same place: a shell starts
+  // afresh, a session or pod is attached to again, a page loads its URL again.
+  reloadPane(id, paneId) {
+    const term = this.get(id);
+    const pane = term?.panes.get(paneId);
+    if (!pane || term.closed) return false;
+    this.#swapPane(term, paneId, leafSource(paneLeaf(pane)));
     return true;
   }
 

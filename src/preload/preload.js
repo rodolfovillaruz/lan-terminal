@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld('terminal', {
   closePane: (paneId) => ipcRenderer.send('pane:close', paneId),
   pinPane: (paneId, on) => ipcRenderer.send('pane:pin', paneId, on),
   maximizePane: (paneId) => ipcRenderer.send('pane:maximize', paneId),
+  reloadPane: (paneId) => ipcRenderer.send('pane:reload', paneId),
   movePane: (paneId, targetId, zone) => ipcRenderer.send('pane:move', paneId, targetId, zone),
   // side: 'left', 'right', 'top' or 'bottom' of the pane.
   splitPane: (paneId, side) => ipcRenderer.send('pane:split', paneId, side),

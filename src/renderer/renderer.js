@@ -970,7 +970,7 @@ async function main() {
   };
   // Also in resize mode, each pane under the pointer shows what a press there does:
   //  - its tools in its top left corner: ✕ closes it, 📌 pins it over a maximized pane,
-  //    ⛶ maximizes it (⊡ puts the panes back);
+  //    ⛶ maximizes it (⊡ puts the panes back), ⟳ reloads it;
   //  - within an eighth of its size from its centre, a hand: drag it onto another pane
   //    to trade places (its middle) or to go beside it (an edge), as in the planner;
   //  - elsewhere, the half nearest the pointer, where a click puts a new pane.
@@ -997,6 +997,7 @@ async function main() {
   const closeTool = tool('✕', 'Close pane', () => window.terminal.closePane(toolsPane));
   const pinTool = tool('📌', '', () => window.terminal.pinPane(toolsPane, !pinned.has(toolsPane)));
   const maxTool = tool('⛶', '', () => window.terminal.maximizePane(maxedId === toolsPane ? null : toolsPane));
+  tool('⟳', 'Reload: close the pane and open what it showed again, in the same place', () => window.terminal.reloadPane(toolsPane));
   resizeOverlay.append(preview, tools);
   let maxedId = null; // as last drawn
   let pinned = new Set();
