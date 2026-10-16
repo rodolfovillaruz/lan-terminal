@@ -277,6 +277,12 @@ class WindowManager extends EventEmitter {
         console.warn('pane:resize-split:', err.message);
       }
     });
+    // A click in resize mode: a new shell on that side of the pane.
+    ipcMain.on('pane:split', (event, paneId, side) => {
+      const term = this.#fromSender(event);
+      const place = Object.hasOwn(ZONES, side) && ZONES[side];
+      if (term && place) this.splitPane(term.id, paneId, place.dir, place.before);
+    });
     ipcMain.on('pane:focus', (event, paneId) => {
       const term = this.#fromSender(event);
       if (term && term.panes.has(paneId) && term.activePane !== paneId) {
@@ -1314,12 +1320,13 @@ class WindowManager extends EventEmitter {
     return true;
   }
 
-  splitPane(id, paneId, dir) {
+  // before puts the new pane left of (row) or above (col) paneId.
+  splitPane(id, paneId, dir, before = false) {
     const term = this.get(id);
     if (!term || !term.panes.has(paneId)) return false;
     const newId = this.#spawnPane(term);
     try {
-      term.layout = layout.splitPane(term.layout, paneId, dir, newId);
+      term.layout = layout.splitPane(term.layout, paneId, dir, newId, before);
     } catch (err) {
       this.#endPane(term.panes.get(newId));
       throw err;

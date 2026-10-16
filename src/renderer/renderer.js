@@ -793,10 +793,54 @@ async function main() {
     h.addEventListener('lostpointercapture', end);
     return h;
   };
+  // Also in resize mode, the half of the pane under the pointer nearest to it shows
+  // where a click puts a new shell. Not over a handle, which is for dragging.
+  const preview = document.createElement('div');
+  preview.className = 'split-preview';
+  preview.hidden = true;
+  preview.textContent = '+';
+  resizeOverlay.append(preview);
+  let splitTarget = null; // { id, side }
+  const paneAt = (x, y) => {
+    const maxed = root.classList.contains('maximized');
+    for (const [id, p] of panes) {
+      if (!p.el.isConnected || (maxed && !p.el.classList.contains('max'))) continue;
+      const r = p.el.getBoundingClientRect();
+      if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return { id, r };
+    }
+    return null;
+  };
+  const showSplit = (e) => {
+    const hit = e && !resizing && e.target === resizeOverlay ? paneAt(e.clientX, e.clientY) : null;
+    splitTarget = null;
+    preview.hidden = !hit;
+    if (!hit) return;
+    const { r } = hit;
+    const x = (e.clientX - r.left) / r.width;
+    const y = (e.clientY - r.top) / r.height;
+    const [side] = [['left', x], ['right', 1 - x], ['top', y], ['bottom', 1 - y]].sort((a, b) => a[1] - b[1])[0];
+    splitTarget = { id: hit.id, side };
+    const w = side === 'left' || side === 'right' ? r.width / 2 : r.width;
+    const h = side === 'top' || side === 'bottom' ? r.height / 2 : r.height;
+    Object.assign(preview.style, {
+      left: `${side === 'right' ? r.right - w : r.left}px`,
+      top: `${side === 'bottom' ? r.bottom - h : r.top}px`,
+      width: `${w}px`,
+      height: `${h}px`,
+    });
+  };
+  resizeOverlay.addEventListener('pointermove', showSplit);
+  resizeOverlay.addEventListener('pointerleave', () => showSplit(null));
+  resizeOverlay.addEventListener('click', (e) => {
+    showSplit(e);
+    if (splitTarget) window.terminal.splitPane(splitTarget.id, splitTarget.side);
+  });
+
   // Walks the layout and the split boxes drawn from it together. None while a pane is
   // maximized: its lines are out of sight.
   function drawHandles() {
     if (resizing) return;
+    preview.hidden = true; // the panes may have moved
     for (const h of resizeOverlay.querySelectorAll('.handle')) h.remove();
     if (resizeOverlay.hidden || !drawn || root.classList.contains('maximized')) return;
     const walk = (node, el, path) => {

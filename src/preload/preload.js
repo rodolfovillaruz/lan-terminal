@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('terminal', {
   exitMoveMode: () => ipcRenderer.send('moveMode:exit'),
   onResizeMode: (cb) => ipcRenderer.on('resizeMode', (_e, enabled) => cb(enabled)),
   exitResizeMode: () => ipcRenderer.send('resizeMode:exit'),
+  // side: 'left', 'right', 'top' or 'bottom' of the pane.
+  splitPane: (paneId, side) => ipcRenderer.send('pane:split', paneId, side),
   moveStart: () => ipcRenderer.send('move:start'),
   moveDrag: () => ipcRenderer.send('move:drag'),
   moveEnd: () => ipcRenderer.send('move:end'),
