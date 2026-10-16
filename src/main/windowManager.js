@@ -12,6 +12,10 @@ const mux = require('./mux');
 const ls = require('./linuxserver');
 const scrcpy = require('./scrcpy');
 const kube = require('./kube');
+const keys = require('./keys');
+
+// The window shortcuts' keys, with Ctrl+Shift+Alt (see #windowKey).
+const WINDOW_KEYS = new Set(['KeyZ', 'KeyF', 'KeyR']);
 
 // Where a dragged pane lands relative to the pane it is dropped on.
 const ZONES = {
@@ -192,6 +196,13 @@ class WindowManager extends EventEmitter {
     }, 2000);
     // Which app each device pane shows, for the planner and for the saved layout.
     setInterval(() => this.#pollDeviceApps(), 3000);
+    // The window shortcuts, from the keyboards: for the focused capture window only.
+    this.lastShortcut = null;
+    const stopKeys = keys.watch((code) => {
+      const term = [...this.terminals.values()].find((t) => !t.closed && !t.win.isDestroyed() && t.win.isFocused());
+      if (term) this.#windowShortcut(term, code);
+    });
+    app.on('will-quit', stopKeys);
 
     // Renderer -> PTY. The sender identifies the window; the pane id picks the shell in it.
     ipcMain.on('pty:input', (event, paneId, data) => this.#pane(event, paneId)?.pty?.write(data));
@@ -1186,19 +1197,29 @@ class WindowManager extends EventEmitter {
 
   // In any pane, Ctrl+Shift+Alt+Z maximizes the active pane or puts it back,
   // Ctrl+Shift+Alt+F turns always on top on or off, and Ctrl+Shift+Alt+R resize mode.
+  // Caught here before the pane sees the key, and also from the keyboards themselves
+  // (see keys.js), for a page that holds the keyboard; returns whether it is one.
   #windowKey(term, input) {
     if (input.type !== 'keyDown' || input.isAutoRepeat) return false;
     if (!(input.control && input.shift && input.alt && !input.meta)) return false;
-    if (input.code === 'KeyZ') {
-      if (term.activePane) this.maximizePane(term.id, term.maximized ? null : term.activePane);
-    } else if (input.code === 'KeyF') {
-      this.setAlwaysOnTop(term.id, !term.alwaysOnTop);
-    } else if (input.code === 'KeyR') {
-      this.setResizeMode(term.id, !term.resizeMode);
-    } else {
-      return false;
-    }
+    if (!WINDOW_KEYS.has(input.code)) return false;
+    this.#windowShortcut(term, input.code);
     return true;
+  }
+
+  // Both ways see most presses, so the second sighting of a key within a moment is the
+  // same press, and is left alone.
+  #windowShortcut(term, code) {
+    const now = Date.now();
+    if (this.lastShortcut?.code === code && now - this.lastShortcut.at < 300) return;
+    this.lastShortcut = { code, at: now };
+    if (code === 'KeyZ') {
+      if (term.activePane) this.maximizePane(term.id, term.maximized ? null : term.activePane);
+    } else if (code === 'KeyF') {
+      this.setAlwaysOnTop(term.id, !term.alwaysOnTop);
+    } else if (code === 'KeyR') {
+      this.setResizeMode(term.id, !term.resizeMode);
+    }
   }
 
   // saved is a pane shape; empty: true opens it with no panes (a locked window saved

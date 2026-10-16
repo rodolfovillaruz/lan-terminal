@@ -109,6 +109,14 @@ To show one pane on its own for a while, **maximize** it: the card's **⛶** but
 
 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd>, in any pane, keeps the window **always on top** (above everything, covering the panel, and out of the taskbar and Alt+Tab) or stops it, like `POST /windows/:id/always-on-top`.
 
+A page that holds the keyboard, such as a webtop in fullscreen, keeps these <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd> shortcuts from the window. To have them work there too, let the app read the keyboards themselves (`/dev/input`), under the window system, by adding your user to the `input` group and logging in again:
+
+```sh
+sudo usermod -aG input "$USER"
+```
+
+Any program you run can then read every key typed, so leave it out if that matters on this machine; without it the shortcuts work everywhere but in such pages, and the app says so once in its log. They act on the focused window only, and turning resize or move mode on ends a page's fullscreen.
+
 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>R</kbd>, in any pane, turns **resize mode** on or off. It puts a handle on each line between the window's panes; drag one to resize the panes on either side, as in the planner. The panes take their new size when you let go. Elsewhere on a pane, the half nearest the pointer lights up with a **+**: click to split the pane there and open a **New pane** form on that side (see Kubernetes pods below). The pane under the pointer also shows its tools in its top left corner: **✕** closes it, **📌** pins it, **⛶** maximizes it (**⊡** puts the panes back), and **⟳** reloads it: the pane closes and what it showed opens again in the same place, so a shell starts afresh, a session, app or pod is attached to again and a page loads again. A pinned pane stays in sight, in its place, over whichever pane is maximized, so you can keep, say, a camera or a shell showing over a full-window desktop; pinning is not saved with the layout. Within an eighth of a pane's size from its centre the cursor becomes a hand: drag the pane onto another one to trade places (drop on its middle) or to put it beside it (drop near an edge), as in the planner. While it is on, the panes get no mouse or keyboard input; press the same keys or Esc to turn it off. Presenter mode hides its tint, label and handles, leaving only the resize cursor over each line.
 
 In a shell or session pane, select text with the mouse and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> to copy it to the clipboard. <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> pastes the clipboard into the pane.
