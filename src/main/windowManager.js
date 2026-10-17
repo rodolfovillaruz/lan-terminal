@@ -12,6 +12,7 @@ const mux = require('./mux');
 const ls = require('./linuxserver');
 const scrcpy = require('./scrcpy');
 const kube = require('./kube');
+const registry = require('./registry');
 
 // Where a dragged pane lands relative to the pane it is dropped on.
 const ZONES = {
@@ -334,6 +335,36 @@ class WindowManager extends EventEmitter {
     // A launcher pane's form: what it offers, a new namespace, and the choice that
     // turns the pane into a pod ('pod:…', see #resolvePod) or a shell.
     ipcMain.handle('launcher:state', (event) => (this.#fromSender(event) ? this.launcherState() : null));
+    // The image breadcrumbs' suggestions: what goes after a prefix, and a repository's
+    // tags. Each answers { images } or { tags }, empty with an error when the registry
+    // does not say.
+    ipcMain.handle('launcher:images', async (event, prefix) => {
+      if (!this.#fromSender(event)) return null;
+      try {
+        return { images: await registry.list(prefix), error: null };
+      } catch (err) {
+        return { images: [], error: err.message };
+      }
+    });
+    ipcMain.handle('launcher:tags', async (event, repo) => {
+      if (!this.#fromSender(event)) return null;
+      try {
+        return { tags: await registry.tags(repo), error: null };
+      } catch (err) {
+        return { tags: [], error: err.message };
+      }
+    });
+    // Adds (on) or removes a preset: kind 'prefix' (an image prefix) or 'hostDir'.
+    // Answers null, or what went wrong.
+    ipcMain.handle('launcher:preset', (event, kind, value, on) => {
+      if (!this.#fromSender(event)) return 'unknown window';
+      try {
+        this.setPreset(kind, value, on);
+        return null;
+      } catch (err) {
+        return err.message;
+      }
+    });
     ipcMain.handle('launcher:namespace', async (event, name) => {
       if (!this.#fromSender(event)) return null;
       try {
@@ -954,7 +985,7 @@ class WindowManager extends EventEmitter {
       if (!this.kubectl) return show(null, 'kubectl is not installed');
       try {
         if (newPod) {
-          await kube.create(this.kubectl, namespace, pod, newPod.app, newPod.tag, newPod.port);
+          await kube.create(this.kubectl, namespace, pod, newPod.repo, newPod.tag, newPod.port, newPod.mounts);
           newPod = null;
           this.refreshSessions();
         }
@@ -1068,7 +1099,7 @@ class WindowManager extends EventEmitter {
     if (source === 'planner') return { planner: true };
     if (source === 'launcher') return { launcher: true };
     if (source === 'droidcam') return { droidcam: true };
-    if (typeof source === 'string' && source.startsWith('pod:')) return this.#resolvePod(source.slice(4).split(':'));
+    if (typeof source === 'string' && source.startsWith('pod:')) return this.#resolvePod(source.slice(4));
     if (typeof source === 'string' && source.startsWith('page:')) {
       const page = source.slice(5);
       if (!validPage(page)) throw new Error('a web page must be an http or https URL');
@@ -1137,45 +1168,89 @@ class WindowManager extends EventEmitter {
     return { app, instance, tag };
   }
 
-  // 'pod:<namespace>:<name>' opens a pod; 'pod:new:<namespace>:<app>:<tag>:<port>'
-  // makes one, named <app>-<n> with the smallest n free in the namespace, and makes
-  // the namespace the one the next new pod form starts on.
-  async #resolvePod(parts) {
+  // 'pod:<namespace>:<name>' opens a pod; 'pod:new:<json>' makes one from { namespace,
+  // repo, tag, port, mounts } (mounts: [{ host, path }], each host one of hostDirs),
+  // named <app>-<tag>-<n> with the smallest n free in the namespace, and makes the
+  // namespace the one the next new pod form starts on.
+  async #resolvePod(spec) {
     if (!this.kubectl) throw new Error('kubectl is not installed');
-    if (parts[0] !== 'new') {
+    if (!spec.startsWith('new:')) {
+      const parts = spec.split(':');
       const [namespace, pod] = parts;
       if (parts.length !== 2 || !kube.validName(namespace) || !kube.validName(pod)) throw new Error('bad pod');
       return { pod, namespace };
     }
-    const [, namespace, app, tag, port] = parts;
-    if (parts.length !== 5 || !kube.validName(namespace) || !ls.validApp(app) || !ls.validTag(tag) || !kube.validPort(Number(port))) {
+    let wanted;
+    try {
+      wanted = JSON.parse(spec.slice(4));
+    } catch {
+      throw new Error('bad new pod');
+    }
+    const { namespace, repo, tag, port, mounts = [] } = wanted ?? {};
+    if (!kube.validName(namespace) || !registry.validRepo(repo) || !registry.validTag(tag) || !kube.validPort(port)) {
       throw new Error('bad pod image');
     }
+    kube.checkMounts(mounts);
+    const unknown = mounts.find((m) => !this.#hostDirs().includes(m.host));
+    if (unknown) throw new Error(`${unknown.host} is not one of the host directories`);
+    const app = registry.parseImage(`${repo}:${tag}`).app;
     await this.refreshSessions();
     const taken = new Set(this.pods.filter((p) => p.namespace === namespace).map((p) => p.name));
     for (const term of this.terminals.values()) for (const p of term.panes.values()) if (p.namespace === namespace) taken.add(p.pod);
     this.config.podNamespace = namespace;
     saveConfig(this.config);
-    return { pod: kube.freeName(app, tag, taken), namespace, newPod: { app, tag, port: Number(port) } };
+    return { pod: kube.freeName(app, tag, taken), namespace, newPod: { repo, tag, port, mounts: mounts.map((m) => ({ host: m.host, path: m.path })) } };
+  }
+
+  #imagePrefixes() {
+    const prefixes = this.config.imagePrefixes;
+    return Array.isArray(prefixes) ? prefixes.filter(registry.validPrefix) : [];
+  }
+
+  #hostDirs() {
+    const dirs = this.config.hostDirs;
+    return Array.isArray(dirs) ? dirs.filter(kube.validPath) : [];
+  }
+
+  // Adds or removes one of the New pane form's presets (see launcherState). A host
+  // directory is a path on the cluster's nodes, only saved here: the node makes it
+  // when a pod mounts it. Removing one leaves the pods that mount it alone.
+  setPreset(kind, value, on) {
+    if (typeof value !== 'string') throw new Error('bad preset');
+    if (kind === 'prefix') {
+      const prefix = value.trim().replace(/\/*$/, '/');
+      if (on && !registry.validPrefix(prefix)) throw new Error(`${value} is not an image prefix, such as lscr.io/linuxserver/ or ghcr.io/org/`);
+      const rest = this.#imagePrefixes().filter((p) => p !== prefix);
+      this.config.imagePrefixes = on ? [...rest, prefix] : rest;
+    } else if (kind === 'hostDir') {
+      const dir = value.trim().length > 1 ? value.trim().replace(/\/+$/, '') : value.trim();
+      if (on && !kube.validPath(dir)) throw new Error(`${value} is not an absolute path`);
+      const rest = this.#hostDirs().filter((d) => d !== dir);
+      this.config.hostDirs = on ? [...rest, dir].sort() : rest;
+    } else {
+      throw new Error('bad preset');
+    }
+    saveConfig(this.config);
   }
 
   // What a launcher pane's form offers: the namespaces, the one to start on (where the
-  // last new pod went, while it exists), linuxserver's images and the app's pods.
-  // Whatever cannot be listed comes back empty, with the reason in errors.
+  // last new pod went, while it exists), the app's pods, and the presets: image
+  // prefixes and host directories. Whatever cannot be listed comes back empty, with
+  // the reason in errors. The images under a prefix come separately (launcher:images).
   async launcherState() {
-    if (!this.kubectl) return { namespaces: [], namespace: null, images: [], pods: [], errors: ['kubectl is not installed'] };
+    const presets = { prefixes: this.#imagePrefixes(), hostDirs: this.#hostDirs() };
+    if (!this.kubectl) return { namespaces: [], namespace: null, pods: [], ...presets, errors: ['kubectl is not installed'] };
     const errors = [];
     const failed = (fallback) => (err) => {
       errors.push(err.message);
       return fallback;
     };
-    const [namespaces, images, pods] = await Promise.all([
+    const [namespaces, pods] = await Promise.all([
       kube.namespaces(this.kubectl).catch(failed([])),
-      kube.catalog().catch(failed([])),
       kube.pods(this.kubectl).catch(failed(this.pods)),
     ]);
     const last = this.config.podNamespace;
-    return { namespaces, namespace: namespaces.includes(last) ? last : namespaces.includes('default') ? 'default' : namespaces[0] ?? null, images, pods, errors };
+    return { namespaces, namespace: namespaces.includes(last) ? last : namespaces.includes('default') ? 'default' : namespaces[0] ?? null, pods, ...presets, errors };
   }
 
   async createNamespace(name) {

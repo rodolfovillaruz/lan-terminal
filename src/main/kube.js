@@ -1,24 +1,47 @@
-// linuxserver.io images as Kubernetes pods, shown in a pane through their browser UI.
+// Images (linuxserver.io's or any other) as Kubernetes pods, shown in a pane through
+// their browser UI.
 // Each pod is a bare Pod the app labels as its own, with /config on an emptyDir:
 // it lasts as long as the pod, through restarts of its container and of the node,
 // and goes when the pod is deleted. Like a linuxserver container, a pod keeps running
 // when its pane closes, and any pane can open it again. The pane reaches the UI
 // through `kubectl port-forward` on a localhost port.
+//
+// A pod can also mount host directories (hostPath volumes on the node, which is this
+// host on a one-node cluster), so pods that mount the same one share its files.
 
 const { execFile, spawn } = require('child_process');
 const os = require('os');
-const ls = require('./linuxserver');
+const path = require('path');
+const registry = require('./registry');
 
-const CATALOG_URL = 'https://api.linuxserver.io/api/v1/images';
-const CATALOG_TTL = 60 * 60 * 1000;
 const MANAGED = 'app.kubernetes.io/managed-by=lan-terminal';
 const IMAGE_ANNOTATION = 'lan-terminal.image';
 const PORT_ANNOTATION = 'lan-terminal.port';
+const MOUNTS_ANNOTATION = 'lan-terminal.mounts';
 const DEFAULT_PORT = 3000; // the desktop UI in linuxserver's Selkies and KasmVNC images
 
 // Kubernetes names (DNS-1123 labels) for namespaces and pods.
 const validName = (name) => typeof name === 'string' && name.length <= 63 && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name);
 const validPort = (port) => Number.isInteger(port) && port > 0 && port < 65536;
+// An absolute path with no "." or ".." parts, such as a host directory or where it
+// goes in a pod.
+const validPath = (p) => typeof p === 'string' && p.length <= 1024 && p.startsWith('/') && !/[\0\n]/.test(p) &&
+  path.posix.normalize(p) === p && (p === '/' || !p.endsWith('/'));
+const RESERVED_PATHS = ['/config', '/dev/shm']; // the pod's own volumes
+
+// [{ host, path }]: each host directory goes to an absolute path in the pod, no two
+// to the same one nor over the pod's own volumes. Throws when they cannot.
+function checkMounts(mounts) {
+  if (!Array.isArray(mounts) || mounts.length > 32) throw new Error('bad mounts');
+  const seen = new Set(RESERVED_PATHS);
+  for (const m of mounts) {
+    if (!validPath(m?.host)) throw new Error(`a host directory is an absolute path: ${m?.host}`);
+    if (!validPath(m.path) || m.path === '/') throw new Error(`a path in the pod is an absolute path other than /: ${m.path}`);
+    if (RESERVED_PATHS.includes(m.path)) throw new Error(`${m.path} is the pod's own volume`);
+    if (seen.has(m.path)) throw new Error(`two volumes go to ${m.path} in the pod`);
+    seen.add(m.path);
+  }
+}
 
 function kubectl(bin, args, { timeout = 15000, input } = {}) {
   return new Promise((resolve, reject) => {
@@ -40,25 +63,33 @@ function createNamespace(bin, name) {
   return kubectl(bin, ['create', 'namespace', name]);
 }
 
-// The app's pods in every namespace: [{ namespace, name, app, tag, port, phase, ready }],
+// The app's pods in every namespace: [{ namespace, name, image, app, tag, port, mounts,
+// phase, ready }],
 // sorted by namespace then name.
 async function pods(bin) {
   const out = await kubectl(bin, ['get', 'pods', '--all-namespaces', '-l', MANAGED, '-o', 'json']);
   return JSON.parse(out).items
     .map((p) => {
-      const ref = ls.parseImage(p.metadata.annotations?.[IMAGE_ANNOTATION]) ?? {};
-      const port = Number(p.metadata.annotations?.[PORT_ANNOTATION]) || DEFAULT_PORT;
+      const annotations = p.metadata.annotations ?? {};
+      const ref = registry.parseImage(annotations[IMAGE_ANNOTATION]);
+      const port = Number(annotations[PORT_ANNOTATION]) || DEFAULT_PORT;
+      let mounts = [];
+      try {
+        mounts = JSON.parse(annotations[MOUNTS_ANNOTATION] ?? '[]');
+      } catch {}
       const ready = (p.status.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True');
-      return { namespace: p.metadata.namespace, name: p.metadata.name, app: ref.app ?? null, tag: ref.tag ?? null, port, phase: p.status.phase, ready };
+      return { namespace: p.metadata.namespace, name: p.metadata.name, image: ref ? `${ref.repo}:${ref.tag}` : null, app: ref?.app ?? null, tag: ref?.tag ?? null, port, mounts, phase: p.status.phase, ready };
     })
     .sort((a, b) => a.namespace.localeCompare(b.namespace) || a.name.localeCompare(b.name, undefined, { numeric: true }));
 }
 
-// The pod for a new instance of app:tag, run as the host user as the linuxserver
-// images expect, with the shared memory and seccomp settings the desktops need.
-function podSpec(namespace, name, app, tag, port) {
+// The pod for a new instance of repo:tag, run as the host user as the linuxserver
+// images expect, with the shared memory and seccomp settings the desktops need, and
+// mounts' host directories (see checkMounts).
+function podSpec(namespace, name, repo, tag, port, mounts = []) {
   const { uid, gid } = os.userInfo();
-  const image = `lscr.io/linuxserver/${app}:${tag}`;
+  const image = `${repo}:${tag}`;
+  const app = registry.parseImage(image).app;
   return {
     apiVersion: 'v1',
     kind: 'Pod',
@@ -66,7 +97,7 @@ function podSpec(namespace, name, app, tag, port) {
       name,
       namespace,
       labels: { 'app.kubernetes.io/managed-by': 'lan-terminal', 'app.kubernetes.io/name': app.replace(/[^a-z0-9-]/g, '-') },
-      annotations: { [IMAGE_ANNOTATION]: image, [PORT_ANNOTATION]: String(port) },
+      annotations: { [IMAGE_ANNOTATION]: image, [PORT_ANNOTATION]: String(port), [MOUNTS_ANNOTATION]: JSON.stringify(mounts) },
     },
     spec: {
       restartPolicy: 'Always',
@@ -80,9 +111,17 @@ function podSpec(namespace, name, app, tag, port) {
           { name: 'TZ', value: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Etc/UTC' },
         ],
         ports: [{ containerPort: port }],
-        volumeMounts: [{ name: 'config', mountPath: '/config' }, { name: 'shm', mountPath: '/dev/shm' }],
+        volumeMounts: [
+          { name: 'config', mountPath: '/config' },
+          { name: 'shm', mountPath: '/dev/shm' },
+          ...mounts.map((m, i) => ({ name: `host-${i}`, mountPath: m.path })),
+        ],
       }],
-      volumes: [{ name: 'config', emptyDir: {} }, { name: 'shm', emptyDir: { medium: 'Memory', sizeLimit: '1Gi' } }],
+      volumes: [
+        { name: 'config', emptyDir: {} },
+        { name: 'shm', emptyDir: { medium: 'Memory', sizeLimit: '1Gi' } },
+        ...mounts.map((m, i) => ({ name: `host-${i}`, hostPath: { path: m.host, type: 'DirectoryOrCreate' } })),
+      ],
     },
   };
 }
@@ -95,10 +134,11 @@ function freeName(app, tag, taken) {
   for (let n = 0; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
-function create(bin, namespace, name, app, tag, port) {
+function create(bin, namespace, name, repo, tag, port, mounts = []) {
   if (!validName(namespace) || !validName(name)) throw new Error(`bad pod: ${namespace}/${name}`);
-  if (!ls.validApp(app) || !ls.validTag(tag) || !validPort(port)) throw new Error(`bad image: ${app}:${tag} port ${port}`);
-  return kubectl(bin, ['create', '-f', '-'], { input: JSON.stringify(podSpec(namespace, name, app, tag, port)) });
+  if (!registry.validRepo(repo) || !registry.validTag(tag) || !validPort(port)) throw new Error(`bad image: ${repo}:${tag} port ${port}`);
+  checkMounts(mounts);
+  return kubectl(bin, ['create', '-f', '-'], { input: JSON.stringify(podSpec(namespace, name, repo, tag, port, mounts)) });
 }
 
 // Deletes one of the app's pods, and waits for it to be gone. Pods it did not make are
@@ -134,19 +174,4 @@ function forward(bin, namespace, name, port) {
   });
 }
 
-// linuxserver's image catalog: [{ name, category, description, tags }], without the
-// deprecated images. Kept for an hour.
-let catalogCache = null;
-async function catalog() {
-  if (catalogCache && Date.now() - catalogCache.at < CATALOG_TTL) return catalogCache.images;
-  const res = await fetch(CATALOG_URL, { signal: AbortSignal.timeout(15000) });
-  if (!res.ok) throw new Error(`the linuxserver catalog answered ${res.status}`);
-  const images = (await res.json()).data.repositories.linuxserver
-    .filter((i) => !i.deprecated && ls.validApp(i.name))
-    .map((i) => ({ name: i.name, category: i.category ?? '', description: i.description ?? '', tags: (i.tags ?? []).map((t) => t.tag).filter(ls.validTag) }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  catalogCache = { images, at: Date.now() };
-  return images;
-}
-
-module.exports = { DEFAULT_PORT, validName, validPort, namespaces, createNamespace, pods, podSpec, freeName, create, remove, waitReady, forward, catalog };
+module.exports = { DEFAULT_PORT, validName, validPort, validPath, checkMounts, namespaces, createNamespace, pods, podSpec, freeName, create, remove, waitReady, forward };

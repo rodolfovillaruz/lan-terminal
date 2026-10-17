@@ -22,6 +22,10 @@ const DEFAULTS = {
   docker: null, // for linuxserver app panes (webtop, chromium, ...); null = find on $PATH
   kubectl: null, // for Kubernetes pod panes; null = find on $PATH
   podNamespace: null, // where the last new pod went; a new pane's form starts there
+  // The New pane form's presets: where a new pod's image name starts, and the host
+  // directories a new pod can mount.
+  imagePrefixes: ['lscr.io/linuxserver/'],
+  hostDirs: [],
   // For Android device panes; null = find on $PATH (adb also in the Android SDK).
   adb: null,
   scrcpy: null,

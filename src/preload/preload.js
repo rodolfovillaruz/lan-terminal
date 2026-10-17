@@ -13,11 +13,17 @@ contextBridge.exposeInMainWorld('terminal', {
   // Camera panes: fitting a pane's height to its video resizes the split above it.
   onCameraFitHeight: (cb) => ipcRenderer.on('camera:fit-height', (_e, paneId) => cb(paneId)),
   resizeSplit: (splitPath, sizes) => ipcRenderer.send('pane:resize-split', splitPath, sizes),
-  // A new pane's form: what it offers, a new namespace, and opening a pod or a shell
-  // ('pod:<ns>:<name>', 'pod:new:<ns>:<app>:<tag>:<port>' or 'shell'). The last two
-  // resolve with an error message, or null.
+  // A new pane's form: what it offers, a new namespace, and opening a pod or the planner
+  // ('pod:<ns>:<name>', 'pod:new:<json>' or 'planner'). The last two resolve with an
+  // error message, or null.
   launcherState: () => ipcRenderer.invoke('launcher:state'),
   createNamespace: (name) => ipcRenderer.invoke('launcher:namespace', name),
+  // The image breadcrumbs: what goes after a prefix ({ images, error }) and a
+  // repository's tags ({ tags, error }). setPreset adds or removes an image prefix
+  // (kind 'prefix') or a host directory ('hostDir'), resolving with an error or null.
+  listImages: (prefix) => ipcRenderer.invoke('launcher:images', prefix),
+  listTags: (repo) => ipcRenderer.invoke('launcher:tags', repo),
+  setPreset: (kind, value, on) => ipcRenderer.invoke('launcher:preset', kind, value, on),
   launch: (paneId, choice) => ipcRenderer.invoke('launcher:open', paneId, choice),
   // true when the dialog says yes; then deletePod answers null, or an error message.
   confirmDeletePod: (namespace, pod) => ipcRenderer.invoke('launcher:confirm-delete-pod', namespace, pod),

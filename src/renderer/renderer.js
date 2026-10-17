@@ -620,8 +620,13 @@ async function main() {
   };
 
   // A new pane's form: open one of the app's pods in a namespace, make a new pod from
-  // any linuxserver image, or show the layout planner. The namespace starts on the one the last
+  // any image, or show the layout planner. The namespace starts on the one the last
   // new pod went to. Picking one turns the pane into it.
+  //
+  // A new pod's image is a breadcrumb: a preset prefix (lscr.io/linuxserver/ to start
+  // with), then a crumb for each part typed before a "/", then the name. The name's
+  // suggestions are what the registry lists under the crumbs so far. The pod can mount
+  // host directories from the form's presets, so pods that mount the same one share it.
   const createLauncherPane = (id) => {
     const el = document.createElement('div');
     el.className = 'pane launcher';
@@ -631,18 +636,32 @@ async function main() {
         <h2>New pane</h2>
         <label class="row">Namespace <select name="namespace"></select></label>
         <div class="row new-namespace" hidden>
-          <input name="newNamespace" placeholder="namespace name" autocomplete="off" spellcheck="false">
+          <input name="newNamespace" data-enter="create-namespace" placeholder="namespace name" autocomplete="off" spellcheck="false">
           <button type="button" data-act="create-namespace">Create</button>
           <button type="button" data-act="cancel-namespace">Cancel</button>
         </div>
         <h3>Open a pod</h3>
         <ul class="pods"></ul>
         <h3>New pod</h3>
-        <label class="row">Image <span class="prefix">lscr.io/linuxserver/</span><input name="image" list="launcher-images-${id}" placeholder="webtop" autocomplete="off" spellcheck="false"></label>
+        <div class="row">Image
+          <span class="crumbs">
+            <select name="prefix" title="Where the image's name starts"></select>
+            <span class="path"></span>
+            <input name="image" list="launcher-images-${id}" placeholder="webtop" autocomplete="off" spellcheck="false">
+          </span>
+          <button type="button" data-act="remove-prefix" title="Take this prefix off the list">✕</button>
+        </div>
         <datalist id="launcher-images-${id}"></datalist>
+        <div class="row new-prefix" hidden>
+          <input name="newPrefix" data-enter="add-prefix" placeholder="ghcr.io/org/" autocomplete="off" spellcheck="false">
+          <button type="button" data-act="add-prefix">Add</button>
+          <button type="button" data-act="cancel-prefix">Cancel</button>
+        </div>
         <label class="row">Tag <input name="tag" list="launcher-tags-${id}" value="latest" autocomplete="off" spellcheck="false"></label>
         <datalist id="launcher-tags-${id}"></datalist>
         <label class="row">UI port <input name="port" type="number" min="1" max="65535" value="3000"></label>
+        <div class="row">Mounts <button type="button" data-act="add-mount" title="Mount a host directory in the pod">+ Mount</button></div>
+        <ul class="mounts"></ul>
         <p class="about"></p>
         <div class="row">
           <button type="submit">Create pod</button>
@@ -650,22 +669,43 @@ async function main() {
           <button type="button" data-act="refresh" title="List the namespaces and pods again">↻</button>
         </div>
         <p class="status"></p>
+        <h3>Host directories</h3>
+        <ul class="host-dirs"></ul>
+        <div class="row">
+          <input name="newHostDir" data-enter="add-host-dir" placeholder="/srv/shared" autocomplete="off" spellcheck="false">
+          <button type="button" data-act="add-host-dir" title="Offer this directory to new pods' mounts">Add</button>
+        </div>
       </form>`;
     const form = el.querySelector('form');
     const nsSelect = form.elements.namespace;
+    const prefixSelect = form.elements.prefix;
+    const imageInput = form.elements.image;
     const newNs = el.querySelector('.new-namespace');
+    const newPrefix = el.querySelector('.new-prefix');
     const podList = el.querySelector('.pods');
+    const pathEl = el.querySelector('.crumbs .path');
     const imageList = el.querySelector(`#launcher-images-${id}`);
     const tagList = el.querySelector(`#launcher-tags-${id}`);
+    const mountList = el.querySelector('.mounts');
+    const hostDirList = el.querySelector('.host-dirs');
     const about = el.querySelector('.about');
     const status = el.querySelector('.status');
     const NEW_NS = '\u0000new'; // the "New namespace…" option, which no namespace can be named
+    const NEW_PREFIX = '\u0000new'; // and "Add prefix…", which no prefix can be
+    // One part of a repository's name, as registries have it.
+    const COMPONENT = /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/;
     let st = null; // the last launcherState
     let busy = false;
     // The pods being deleted, as 'namespace/name'; several can be at once. Only one
     // dialog asks at a time.
     const deleting = new Set();
     let confirming = false;
+    let crumbs = []; // the image name's parts after the prefix, before the name
+    let images = []; // what the registry lists after prefix(), as last listed
+    let listing = 0; // the latest listImages and listTags, so older answers are dropped
+    let tagging = 0;
+    let tagTimer = null;
+    const mounts = []; // the new pod's [{ host, path }]
 
     // waiting puts a spinner before the text.
     const say = (text, error = false, waiting = false) => {
@@ -674,17 +714,23 @@ async function main() {
       status.classList.toggle('waiting', waiting);
     };
     const sayDeleting = () => deleting.size > 0 && (say(`Deleting ${[...deleting].join(', ')}…`, false, true), true);
+    const option = (value, text = value) => Object.assign(document.createElement('option'), { value, textContent: text });
+    const button = (text, title, onClick, className = '') => {
+      const b = Object.assign(document.createElement('button'), { type: 'button', textContent: text, title, className });
+      b.addEventListener('click', onClick);
+      return b;
+    };
+    const prefix = () => (prefixSelect.value === NEW_PREFIX ? '' : prefixSelect.value) + crumbs.map((c) => `${c}/`).join('');
+
     const drawPods = () => {
       const ns = nsSelect.value;
       const pods = (st?.pods ?? []).filter((p) => p.namespace === ns);
       podList.replaceChildren(...pods.map((p) => {
         const li = document.createElement('li');
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.textContent = p.name;
-        b.addEventListener('click', () => launch(`pod:${p.namespace}:${p.name}`, `Opening ${p.namespace}/${p.name}…`));
+        const b = button(p.name, p.image ?? '', () => launch(`pod:${p.namespace}:${p.name}`, `Opening ${p.namespace}/${p.name}…`));
         const what = document.createElement('span');
-        what.textContent = `${p.app ? `${p.app}:${p.tag}` : 'unknown image'} · ${p.ready ? 'ready' : p.phase}`;
+        what.textContent = [`${p.app ? `${p.app}:${p.tag}` : 'unknown image'}`, p.ready ? 'ready' : p.phase, ...p.mounts.map((m) => `${m.host} → ${m.path}`)].join(' · ');
+        what.title = p.image ?? '';
         if (deleting.has(`${p.namespace}/${p.name}`)) {
           li.className = 'deleting';
           b.disabled = true;
@@ -694,13 +740,7 @@ async function main() {
           li.append(b, what, spin);
           return li;
         }
-        const del = document.createElement('button');
-        del.type = 'button';
-        del.className = 'delete';
-        del.textContent = '✕';
-        del.title = `Delete ${p.namespace}/${p.name}`;
-        del.addEventListener('click', () => deletePod(p));
-        li.append(b, what, del);
+        li.append(b, what, button('✕', `Delete ${p.namespace}/${p.name}`, () => deletePod(p), 'delete'));
         return li;
       }));
       if (!pods.length) {
@@ -710,28 +750,135 @@ async function main() {
         podList.append(li);
       }
     };
-    const drawImage = () => {
-      const image = st?.images.find((i) => i.name === form.elements.image.value.trim());
-      tagList.replaceChildren(...(image?.tags ?? ['latest']).map((t) => Object.assign(document.createElement('option'), { value: t })));
-      about.textContent = image ? `${image.category ? `${image.category}. ` : ''}${image.description.replace(/\[([^\]]*)\]/g, '$1')}` : '';
+
+    // The crumbs between the prefix and the name; clicking one goes back to it.
+    const drawCrumbs = () => {
+      pathEl.replaceChildren(...crumbs.map((c, i) => button(c, 'Back to this part', () => {
+        crumbs = crumbs.slice(0, i);
+        imageInput.value = c;
+        drawCrumbs();
+        loadImages();
+        imageInput.focus();
+      }, 'crumb')));
     };
+    const loadImages = async () => {
+      const at = ++listing;
+      const under = prefix();
+      images = [];
+      imageList.replaceChildren();
+      drawImage();
+      if (!under) return;
+      const res = await window.terminal.listImages(under);
+      if (at !== listing || !res) return;
+      images = res.images;
+      imageList.replaceChildren(...images.map((i) => option(i.name, i.name.endsWith('/') ? 'more…' : i.category)));
+      drawImage();
+    };
+    // The about line and the tags of the name typed, which come with linuxserver's
+    // catalog and are listed apart for other registries.
+    const drawImage = () => {
+      const name = imageInput.value.trim();
+      const image = images.find((i) => i.name === name);
+      about.textContent = image?.description ? `${image.category ? `${image.category}. ` : ''}${image.description.replace(/\[([^\]]*)\]/g, '$1')}` : '';
+      const showTags = (tags) => tagList.replaceChildren(...(tags.length ? tags : ['latest']).map((t) => option(t, '')));
+      clearTimeout(tagTimer);
+      const at = ++tagging;
+      if (image?.tags) return showTags(image.tags);
+      showTags([]);
+      if (!COMPONENT.test(name) || !prefix()) return;
+      tagTimer = setTimeout(async () => {
+        const res = await window.terminal.listTags(prefix() + name);
+        if (at === tagging && res) showTags(res.tags);
+      }, 300);
+    };
+    // A "/" typed or picked turns the parts before it into crumbs; a ":" sends what
+    // follows it to the tag.
+    const imageChanged = () => {
+      let value = imageInput.value;
+      const colon = value.indexOf(':');
+      if (colon >= 0) {
+        form.elements.tag.value = value.slice(colon + 1) || 'latest';
+        value = value.slice(0, colon);
+      }
+      const parts = value.split('/');
+      const name = parts.pop();
+      const pushed = parts.filter(Boolean);
+      const bad = pushed.find((c) => !COMPONENT.test(c));
+      if (bad) return say(`${bad} is not part of an image name: lowercase letters, digits, and . _ - between them.`, true);
+      imageInput.value = name;
+      if (!pushed.length) return drawImage();
+      crumbs.push(...pushed);
+      if (status.classList.contains('error')) say('');
+      drawCrumbs();
+      loadImages();
+    };
+
+    const drawPrefixes = () => {
+      const keep = prefixSelect.value;
+      prefixSelect.replaceChildren(...st.prefixes.map((p) => option(p)), option(NEW_PREFIX, 'Add prefix…'));
+      prefixSelect.value = st.prefixes.includes(keep) ? keep : st.prefixes[0] ?? NEW_PREFIX;
+      newPrefix.hidden = prefixSelect.value !== NEW_PREFIX;
+    };
+    const drawMounts = () => {
+      const dirs = st?.hostDirs ?? [];
+      form.querySelector('[data-act="add-mount"]').disabled = !dirs.length;
+      mountList.replaceChildren(...mounts.map((m, i) => {
+        const li = document.createElement('li');
+        const host = document.createElement('select');
+        host.replaceChildren(...dirs.map((d) => option(d)));
+        if (!dirs.includes(m.host)) m.host = dirs[0] ?? '';
+        host.value = m.host;
+        host.addEventListener('change', () => { m.host = host.value; });
+        const into = Object.assign(document.createElement('input'), { value: m.path, placeholder: '/data', autocomplete: 'off', spellcheck: false, title: 'Where it goes in the pod' });
+        into.addEventListener('input', () => { m.path = into.value.trim(); });
+        li.append(host, Object.assign(document.createElement('span'), { textContent: '→' }), into, button('✕', 'Leave this mount out', () => {
+          mounts.splice(i, 1);
+          drawMounts();
+        }, 'delete'));
+        return li;
+      }));
+      if (!dirs.length) {
+        mountList.append(Object.assign(document.createElement('li'), { className: 'none', textContent: 'Add a host directory below to mount it in new pods.' }));
+      }
+    };
+    const drawHostDirs = () => {
+      hostDirList.replaceChildren(...st.hostDirs.map((d) => {
+        const li = document.createElement('li');
+        li.append(Object.assign(document.createElement('span'), { textContent: d }), button('✕', 'Take this directory off the list', () => preset('hostDir', d, false), 'delete'));
+        return li;
+      }));
+      if (!st.hostDirs.length) hostDirList.append(Object.assign(document.createElement('li'), { className: 'none', textContent: 'None yet.' }));
+    };
+
     const load = async (keepNamespace = true) => {
-      say('Listing namespaces, pods and images…');
+      say('Listing namespaces and pods…');
       const prev = keepNamespace ? nsSelect.value : '';
+      const first = !st;
       st = await window.terminal.launcherState();
       if (!st) return;
       const pick = prev && st.namespaces.includes(prev) ? prev : st.namespace;
-      nsSelect.replaceChildren(
-        ...st.namespaces.map((n) => Object.assign(document.createElement('option'), { value: n, textContent: n })),
-        Object.assign(document.createElement('option'), { value: NEW_NS, textContent: 'New namespace…' }),
-      );
+      nsSelect.replaceChildren(...st.namespaces.map((n) => option(n)), option(NEW_NS, 'New namespace…'));
       nsSelect.value = pick ?? NEW_NS;
       newNs.hidden = nsSelect.value !== NEW_NS;
-      imageList.replaceChildren(...st.images.map((i) => Object.assign(document.createElement('option'), { value: i.name, textContent: i.category })));
+      const prefixBefore = prefixSelect.value;
+      drawPrefixes();
       drawPods();
-      drawImage();
+      drawMounts();
+      drawHostDirs();
+      if (first || prefixSelect.value !== prefixBefore) {
+        crumbs = [];
+        drawCrumbs();
+        loadImages();
+      }
       say(st.errors.join(' · '), st.errors.length > 0);
       if (!st.errors.length) sayDeleting();
+    };
+    // Adds or removes a preset, then lists everything again.
+    const preset = async (kind, value, on) => {
+      const err = await window.terminal.setPreset(kind, value, on);
+      if (err) return say(err, true);
+      await load();
+      return true;
     };
     const deletePod = async (p) => {
       const label = `${p.namespace}/${p.name}`;
@@ -767,7 +914,32 @@ async function main() {
       if (!newNs.hidden) form.elements.newNamespace.focus();
       drawPods();
     });
-    form.elements.image.addEventListener('input', drawImage);
+    prefixSelect.addEventListener('change', () => {
+      newPrefix.hidden = prefixSelect.value !== NEW_PREFIX;
+      if (!newPrefix.hidden) {
+        form.elements.newPrefix.value = '';
+        form.elements.newPrefix.focus();
+      }
+      crumbs = [];
+      drawCrumbs();
+      loadImages();
+    });
+    imageInput.addEventListener('input', imageChanged);
+    // Backspace in an empty name takes the last crumb back to edit.
+    imageInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Backspace' || imageInput.value || !crumbs.length) return;
+      e.preventDefault();
+      imageInput.value = crumbs.pop();
+      drawCrumbs();
+      loadImages();
+    });
+    // Enter in a side input presses its button rather than creating a pod.
+    form.addEventListener('keydown', (e) => {
+      const act = e.key === 'Enter' && e.target.dataset?.enter;
+      if (!act) return;
+      e.preventDefault();
+      form.querySelector(`button[data-act="${act}"]`).click();
+    });
     form.addEventListener('click', async (e) => {
       const act = e.target.closest('button')?.dataset.act;
       if (act === 'planner') launch('planner', 'Opening the layout planner…');
@@ -789,18 +961,54 @@ async function main() {
         drawPods();
         say(`Created namespace ${name}.`);
       }
+      if (act === 'add-prefix') {
+        const value = form.elements.newPrefix.value.trim().replace(/\/*$/, '/');
+        if (!(await preset('prefix', value, true))) return;
+        prefixSelect.value = value;
+        newPrefix.hidden = true;
+        crumbs = [];
+        drawCrumbs();
+        loadImages();
+        say(`Added ${value}.`);
+      }
+      if (act === 'cancel-prefix') {
+        prefixSelect.value = st?.prefixes[0] ?? NEW_PREFIX;
+        newPrefix.hidden = prefixSelect.value !== NEW_PREFIX;
+        loadImages();
+      }
+      if (act === 'remove-prefix') {
+        const value = prefixSelect.value;
+        if (value === NEW_PREFIX) return;
+        if (await preset('prefix', value, false)) say(`Took ${value} off the list.`);
+      }
+      if (act === 'add-mount') {
+        mounts.push({ host: st?.hostDirs[0] ?? '', path: '' });
+        drawMounts();
+        mountList.querySelector('li:last-child input')?.focus();
+      }
+      if (act === 'add-host-dir') {
+        const value = form.elements.newHostDir.value.trim();
+        if (!(await preset('hostDir', value, true))) return;
+        form.elements.newHostDir.value = '';
+        say(`Added ${value}; new pods can mount it.`);
+      }
     });
     form.addEventListener('submit', (e) => {
       e.preventDefault();
       const ns = nsSelect.value;
-      const image = form.elements.image.value.trim();
+      const name = imageInput.value.trim();
       const tag = form.elements.tag.value.trim() || 'latest';
       const port = Number(form.elements.port.value);
+      const wanted = mounts.filter((m) => m.path);
       if (!ns || ns === NEW_NS) return say('Pick a namespace first.', true);
-      if (!/^[a-z0-9][a-z0-9_.-]*$/.test(image)) return say('Pick an image, e.g. webtop.', true);
+      if (prefixSelect.value === NEW_PREFIX && !crumbs.length) return say('Pick where the image name starts, or type it in full, e.g. ghcr.io/org/app.', true);
+      if (!COMPONENT.test(name)) return say('Pick an image, e.g. webtop.', true);
       if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(tag)) return say('That is not an image tag.', true);
       if (!Number.isInteger(port) || port < 1 || port > 65535) return say('The UI port is a number from 1 to 65535.', true);
-      launch(`pod:new:${ns}:${image}:${tag}:${port}`, `Creating a ${image} pod in ${ns}…`);
+      const bad = wanted.find((m) => !m.path.startsWith('/'));
+      if (bad) return say(`A path in the pod starts with "/": ${bad.path}`, true);
+      const repo = prefix() + name;
+      launch(`pod:new:${JSON.stringify({ namespace: ns, repo, tag, port, mounts: wanted })}`, `Creating a ${name} pod in ${ns}…`);
     });
     load();
 
@@ -808,8 +1016,8 @@ async function main() {
       el,
       update: () => {},
       syncSize: () => {},
-      focus: () => (form.elements.image.value ? nsSelect : form.elements.image).focus(),
-      dispose: () => {},
+      focus: () => (imageInput.value ? nsSelect : imageInput).focus(),
+      dispose: () => clearTimeout(tagTimer),
     };
     panes.set(id, p);
     return p;

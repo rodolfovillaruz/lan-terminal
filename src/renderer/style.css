@@ -209,7 +209,18 @@ html, body {
 .launcher h3 { margin: 18px 0 8px; font-size: 14px; color: rgba(80, 160, 255, 0.95); }
 .launcher .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
 .launcher .row[hidden] { display: none; }
-.launcher .prefix { opacity: 0.55; margin-right: -8px; }
+.launcher .crumbs { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.launcher .crumbs .path { display: contents; }
+.launcher .crumbs .crumb { padding: 2px 6px; border-color: transparent; background: rgba(80, 160, 255, 0.12); }
+.launcher .crumbs .crumb::after { content: '/'; margin-left: 6px; opacity: 0.55; }
+.launcher .mounts, .launcher .host-dirs { list-style: none; margin: 0 0 6px; padding: 0; }
+.launcher .mounts li, .launcher .host-dirs li { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.launcher .mounts li.none, .launcher .host-dirs li.none { opacity: 0.6; }
+.launcher .mounts input { flex: 1; min-width: 10ch; }
+.launcher .mounts button.delete, .launcher .host-dirs button.delete { margin-left: auto; padding: 2px 8px; }
+.launcher .mounts button.delete:hover, .launcher .host-dirs button.delete:hover,
+.launcher .mounts button.delete:focus-visible, .launcher .host-dirs button.delete:focus-visible { border-color: #ff8a80; color: #ff8a80; }
+.launcher button:disabled { opacity: 0.4; cursor: default; }
 .launcher input, .launcher select, .launcher button {
   font: inherit;
   color: inherit;
