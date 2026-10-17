@@ -87,9 +87,11 @@ function podSpec(namespace, name, app, tag, port) {
   };
 }
 
-// A name for a new pod of app in namespace: <app>-<n> with the smallest free n.
-function freeName(app, taken) {
-  const base = app.replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'app';
+// A name for a new pod of app:tag in namespace: <app>-<tag>-<n> with the smallest free
+// n, the tag lowercased and its dots and underscores made dashes, as pod names need.
+function freeName(app, tag, taken) {
+  const part = (s) => s.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  const base = [part(app) || 'app', part(tag)].filter(Boolean).join('-').slice(0, 50).replace(/-$/, '');
   for (let n = 0; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 

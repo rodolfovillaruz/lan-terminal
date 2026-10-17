@@ -1148,7 +1148,7 @@ class WindowManager extends EventEmitter {
     for (const term of this.terminals.values()) for (const p of term.panes.values()) if (p.namespace === namespace) taken.add(p.pod);
     this.config.podNamespace = namespace;
     saveConfig(this.config);
-    return { pod: kube.freeName(app, taken), namespace, newPod: { app, tag, port: Number(port) } };
+    return { pod: kube.freeName(app, tag, taken), namespace, newPod: { app, tag, port: Number(port) } };
   }
 
   // What a launcher pane's form offers: the namespaces, the one to start on (where the
