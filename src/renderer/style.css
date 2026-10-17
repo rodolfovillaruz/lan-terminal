@@ -238,6 +238,16 @@ html, body {
 .launcher button:hover, .launcher button:focus-visible { border-color: rgba(80, 160, 255, 0.9); outline: none; }
 .launcher button[type="submit"] { background: rgba(30, 120, 255, 0.35); }
 .launcher .pods { list-style: none; margin: 0; padding: 0; }
+.launcher .chown-job { gap: 4px; }
+.launcher .chown-job select { margin-right: 4px; }
+.launcher .chown-job input.id { width: 7ch; }
+.launcher .chown-job button { margin-left: 4px; }
+.launcher .jobs { list-style: none; margin: 0 0 6px; padding: 0; }
+.launcher .jobs li { display: flex; align-items: center; gap: 8px; margin: 4px 0; min-height: 26px; }
+.launcher .jobs li span, .launcher .jobs li.none { opacity: 0.6; }
+.launcher .jobs li span.failed { color: #ff8a80; opacity: 1; }
+.launcher .jobs button.delete { margin-left: auto; padding: 2px 8px; }
+.launcher .jobs button.delete:hover, .launcher .jobs button.delete:focus-visible { border-color: #ff8a80; color: #ff8a80; }
 .launcher .pods li { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
 .launcher .pods li span, .launcher .pods li.none { opacity: 0.6; }
 .launcher .pods button.delete { margin-left: auto; padding: 2px 8px; }

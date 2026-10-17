@@ -676,6 +676,13 @@ async function main() {
           <input name="newHostDir" data-enter="add-host-dir" placeholder="/srv/shared" autocomplete="off" spellcheck="false">
           <button type="button" data-act="add-host-dir" title="Offer this directory to new pods' mounts">Add</button>
         </div>
+        <h3>Chown job</h3>
+        <div class="row chown-job">
+          <select name="jobHost" title="The host directory to give, with everything in it, to the user and group"></select>
+          <input name="jobUid" type="number" min="0" step="1" class="id" data-enter="run-chown" title="User id">:<input name="jobGid" type="number" min="0" step="1" class="id" data-enter="run-chown" title="Group id">
+          <button type="button" data-act="run-chown" title="Run the job in the namespace: chown -R the directory to this user and group">▶</button>
+        </div>
+        <ul class="jobs"></ul>
       </form>`;
     const form = el.querySelector('form');
     const nsSelect = form.elements.namespace;
@@ -689,6 +696,7 @@ async function main() {
     const tagList = el.querySelector(`#launcher-tags-${id}`);
     const mountList = el.querySelector('.mounts');
     const hostDirList = el.querySelector('.host-dirs');
+    const jobList = el.querySelector('.jobs');
     const about = el.querySelector('.about');
     const status = el.querySelector('.status');
     const NEW_NS = '\u0000new'; // the "New namespace…" option, which no namespace can be named
@@ -707,6 +715,9 @@ async function main() {
     let tagging = 0;
     let tagTimer = null;
     const mounts = []; // the new pod's [{ host, path }]
+    const deletingJobs = new Set(); // the chown jobs being deleted, as 'namespace/name'
+    let jobTimer = null;
+    let disposed = false;
 
     // waiting puts a spinner before the text.
     const say = (text, error = false, waiting = false) => {
@@ -870,6 +881,55 @@ async function main() {
       if (!st.hostDirs.length) hostDirList.append(Object.assign(document.createElement('li'), { className: 'none', textContent: 'None yet.' }));
     };
 
+    // The namespace's chown jobs: a spinner while one runs, and ✕ to delete it once it
+    // is done. While any runs, the list is asked for again every two seconds.
+    const drawJobs = () => {
+      const jobs = (st?.jobs ?? []).filter((j) => j.namespace === nsSelect.value);
+      jobList.replaceChildren(...jobs.map((j) => {
+        const li = document.createElement('li');
+        const label = `${j.namespace}/${j.name}`;
+        const what = Object.assign(document.createElement('span'), { textContent: `${j.host ?? '?'} → ${j.uid ?? '?'}:${j.gid ?? '?'} · ${j.state}`, title: label });
+        if (j.state === 'failed') what.className = 'failed';
+        li.append(what);
+        if (j.state === 'running' || deletingJobs.has(label)) {
+          li.append(Object.assign(document.createElement('i'), { className: 'spinner', title: j.state === 'running' ? 'Running…' : 'Deleting…' }));
+        } else {
+          li.append(button('✕', `Delete the job ${label}`, () => deleteJob(j), 'delete'));
+        }
+        return li;
+      }));
+      if (!jobs.length) jobList.append(Object.assign(document.createElement('li'), { className: 'none', textContent: 'No jobs in this namespace.' }));
+      clearTimeout(jobTimer);
+      jobTimer = null;
+      if (!disposed && (st?.jobs ?? []).some((j) => j.state === 'running')) jobTimer = setTimeout(loadJobs, 2000);
+    };
+    const loadJobs = async () => {
+      const { jobs, error } = await window.terminal.chownJobs();
+      if (disposed || !st) return;
+      if (error) say(error, true);
+      else st.jobs = jobs;
+      drawJobs();
+    };
+    const deleteJob = async (j) => {
+      const label = `${j.namespace}/${j.name}`;
+      if (deletingJobs.has(label)) return;
+      deletingJobs.add(label);
+      drawJobs();
+      const err = await window.terminal.deleteChownJob(j.namespace, j.name);
+      deletingJobs.delete(label);
+      if (err) say(`${label}: ${err}`, true);
+      await loadJobs();
+    };
+    const drawJobHosts = () => {
+      const select = form.elements.jobHost;
+      const keep = select.value;
+      select.replaceChildren(...st.hostDirs.map((d) => option(d)));
+      if (st.hostDirs.includes(keep)) select.value = keep;
+      form.querySelector('[data-act="run-chown"]').disabled = !st.hostDirs.length;
+      if (form.elements.jobUid.value === '') form.elements.jobUid.value = st.chownUid;
+      if (form.elements.jobGid.value === '') form.elements.jobGid.value = st.chownGid;
+    };
+
     const load = async (keepNamespace = true) => {
       say('Listing namespaces and pods…');
       const prev = keepNamespace ? nsSelect.value : '';
@@ -885,6 +945,8 @@ async function main() {
       drawPods();
       drawMounts();
       drawHostDirs();
+      drawJobHosts();
+      drawJobs();
       if (first || prefixSelect.value !== prefixBefore) {
         crumbs = [];
         drawCrumbs();
@@ -945,6 +1007,7 @@ async function main() {
       newNs.hidden = nsSelect.value !== NEW_NS;
       if (!newNs.hidden) form.elements.newNamespace.focus();
       drawPods();
+      drawJobs();
     });
     prefixSelect.addEventListener('change', () => {
       newPrefix.hidden = prefixSelect.value !== NEW_PREFIX;
@@ -1018,6 +1081,20 @@ async function main() {
         drawMounts();
         mountList.querySelector('li:last-child input')?.focus();
       }
+      if (act === 'run-chown') {
+        const ns = nsSelect.value;
+        const host = form.elements.jobHost.value;
+        const [uid, gid] = [form.elements.jobUid.value, form.elements.jobGid.value].map((v) => v.trim());
+        const isId = (v) => /^\d+$/.test(v) && Number(v) < 2 ** 31;
+        if (!ns || ns === NEW_NS) return say('Pick a namespace first.', true);
+        if (!host) return say('Add a host directory first.', true);
+        if (!(isId(uid) && isId(gid))) return say('The user and group are whole numbers, e.g. 1000.', true);
+        say(`Starting a job to chown ${host} to ${uid}:${gid}…`);
+        const err = await window.terminal.createChownJob(ns, host, Number(uid), Number(gid));
+        if (err) return say(err, true);
+        await loadJobs();
+        say(`Started a job to chown ${host} to ${uid}:${gid} in ${ns}.`);
+      }
       if (act === 'add-host-dir') {
         const value = form.elements.newHostDir.value.trim();
         if (!(await preset('hostDir', value, true))) return;
@@ -1054,7 +1131,11 @@ async function main() {
       update: () => {},
       syncSize: () => {},
       focus: () => (imageInput.value ? nsSelect : imageInput).focus(),
-      dispose: () => clearTimeout(tagTimer),
+      dispose: () => {
+        disposed = true;
+        clearTimeout(tagTimer);
+        clearTimeout(jobTimer);
+      },
     };
     panes.set(id, p);
     return p;

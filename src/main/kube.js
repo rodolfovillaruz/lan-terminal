@@ -18,6 +18,7 @@ const MANAGED = 'app.kubernetes.io/managed-by=lan-terminal';
 const IMAGE_ANNOTATION = 'lan-terminal.image';
 const PORT_ANNOTATION = 'lan-terminal.port';
 const MOUNTS_ANNOTATION = 'lan-terminal.mounts';
+const CHOWN_ANNOTATION = 'lan-terminal.chown'; // a chown job's { host, uid, gid }
 const DEFAULT_PORT = 3000; // the desktop UI in linuxserver's Selkies and KasmVNC images
 
 // Kubernetes names (DNS-1123 labels) for namespaces and pods.
@@ -166,6 +167,71 @@ async function remove(bin, namespace, name) {
   return kubectl(bin, ['delete', 'pod', name, '-n', namespace], { timeout: 120000 });
 }
 
+// A chown job gives a host directory and everything in it to a user and group, as a
+// mount's chown does but once, without a pod: a Job running chown -R as root from
+// busybox, named chown-<random>. It stays, with its pod, until it is deleted.
+function chownJobSpec(namespace, host, uid, gid) {
+  return {
+    apiVersion: 'batch/v1',
+    kind: 'Job',
+    metadata: {
+      generateName: 'chown-',
+      namespace,
+      labels: { 'app.kubernetes.io/managed-by': 'lan-terminal', 'app.kubernetes.io/name': 'chown' },
+      annotations: { [CHOWN_ANNOTATION]: JSON.stringify({ host, uid, gid }) },
+    },
+    spec: {
+      backoffLimit: 0,
+      template: {
+        // Not labelled as the app's, so its pod does not list with the app's pods.
+        metadata: { labels: { 'app.kubernetes.io/name': 'chown' } },
+        spec: {
+          restartPolicy: 'Never',
+          containers: [{
+            name: 'chown',
+            image: CHOWN_IMAGE,
+            command: ['chown', '-R', `${uid}:${gid}`, '/mnt'],
+            securityContext: { runAsUser: 0, runAsGroup: 0 },
+            volumeMounts: [{ name: 'host', mountPath: '/mnt' }],
+          }],
+          volumes: [{ name: 'host', hostPath: { path: host, type: 'DirectoryOrCreate' } }],
+        },
+      },
+    },
+  };
+}
+
+function createChownJob(bin, namespace, host, uid, gid) {
+  if (!validName(namespace)) throw new Error(`bad namespace: ${namespace}`);
+  if (!validPath(host)) throw new Error(`a host directory is an absolute path: ${host}`);
+  if (!(validId(uid) && validId(gid))) throw new Error('a user or group id is a whole number from 0');
+  return kubectl(bin, ['create', '-f', '-', '-o', 'name'], { input: JSON.stringify(chownJobSpec(namespace, host, uid, gid)) });
+}
+
+// The app's chown jobs in every namespace: [{ namespace, name, host, uid, gid, state }],
+// state being 'running', 'complete' or 'failed', sorted by namespace then when made.
+async function chownJobs(bin) {
+  const out = await kubectl(bin, ['get', 'jobs', '--all-namespaces', '-l', `${MANAGED},app.kubernetes.io/name=chown`, '-o', 'json']);
+  return JSON.parse(out).items
+    .map((j) => {
+      let what = {};
+      try {
+        what = JSON.parse(j.metadata.annotations?.[CHOWN_ANNOTATION] ?? '{}');
+      } catch {}
+      const done = (type) => (j.status.conditions ?? []).some((c) => c.type === type && c.status === 'True');
+      const state = done('Complete') ? 'complete' : done('Failed') ? 'failed' : 'running';
+      return { namespace: j.metadata.namespace, name: j.metadata.name, host: what.host ?? null, uid: what.uid ?? null, gid: what.gid ?? null, state, created: j.metadata.creationTimestamp };
+    })
+    .sort((a, b) => a.namespace.localeCompare(b.namespace) || a.created.localeCompare(b.created));
+}
+
+// Deletes one of the app's chown jobs, and its pod. Jobs it did not make are left alone.
+async function removeChownJob(bin, namespace, name) {
+  if (!validName(namespace) || !validName(name)) throw new Error(`bad job: ${namespace}/${name}`);
+  if (!(await chownJobs(bin)).some((j) => j.namespace === namespace && j.name === name)) throw new Error(`${namespace}/${name} is not one of this app's chown jobs`);
+  return kubectl(bin, ['delete', 'job', name, '-n', namespace, '--cascade=foreground'], { timeout: 120000 });
+}
+
 // Waits for the pod to be ready; pulling a desktop image the first time takes minutes.
 function waitReady(bin, namespace, name) {
   return kubectl(bin, ['wait', '--for=condition=Ready', `pod/${name}`, '-n', namespace, '--timeout=900s'], { timeout: 910000 });
@@ -191,4 +257,4 @@ function forward(bin, namespace, name, port) {
   });
 }
 
-module.exports = { DEFAULT_PORT, validName, validPort, validBrowserPort, validPath, checkMounts, namespaces, createNamespace, pods, podSpec, freeName, create, remove, waitReady, forward };
+module.exports = { DEFAULT_PORT, validName, validPort, validBrowserPort, validPath, checkMounts, namespaces, createNamespace, pods, podSpec, freeName, create, remove, chownJobSpec, createChownJob, chownJobs, removeChownJob, waitReady, forward };

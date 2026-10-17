@@ -26,6 +26,10 @@ contextBridge.exposeInMainWorld('terminal', {
   setPreset: (kind, value, on) => ipcRenderer.invoke('launcher:preset', kind, value, on),
   createPod: (wanted) => ipcRenderer.invoke('launcher:create-pod', wanted),
   launch: (paneId, choice) => ipcRenderer.invoke('launcher:open', paneId, choice),
+  // Chown jobs: listing ({ jobs, error }), and making or deleting one (an error or null).
+  chownJobs: () => ipcRenderer.invoke('launcher:chown-jobs'),
+  createChownJob: (namespace, host, uid, gid) => ipcRenderer.invoke('launcher:create-chown-job', namespace, host, uid, gid),
+  deleteChownJob: (namespace, name) => ipcRenderer.invoke('launcher:delete-chown-job', namespace, name),
   // true when the dialog says yes; then deletePod answers null, or an error message.
   confirmDeletePod: (namespace, pod) => ipcRenderer.invoke('launcher:confirm-delete-pod', namespace, pod),
   deletePod: (namespace, pod) => ipcRenderer.invoke('launcher:delete-pod', namespace, pod),

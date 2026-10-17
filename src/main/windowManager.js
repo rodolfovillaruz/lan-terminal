@@ -384,7 +384,7 @@ class WindowManager extends EventEmitter {
         type: 'warning',
         title: 'Delete pod',
         message: `Delete the pod ${namespace}/${pod}?`,
-        detail: 'Its home directory (/config) goes with it, and the panes showing it close.',
+        detail: 'Its home directory (/config) goes with it, and the panes showing it turn into New pane forms.',
         buttons: ['Cancel', 'Delete'],
         defaultId: 0,
         cancelId: 0,
@@ -406,6 +406,35 @@ class WindowManager extends EventEmitter {
       if (!this.#fromSender(event)) return null;
       try {
         await this.createPod(wanted);
+        return null;
+      } catch (err) {
+        return err.message;
+      }
+    });
+    // Chown jobs from the form: listing them ({ jobs, error }) while one runs, making one
+    // and deleting one, which answer null or what went wrong.
+    ipcMain.handle('launcher:chown-jobs', async (event) => {
+      if (!this.#fromSender(event) || !this.kubectl) return { jobs: [], error: null };
+      try {
+        return { jobs: await kube.chownJobs(this.kubectl), error: null };
+      } catch (err) {
+        return { jobs: [], error: err.message };
+      }
+    });
+    ipcMain.handle('launcher:create-chown-job', async (event, namespace, host, uid, gid) => {
+      if (!this.#fromSender(event)) return 'unknown window';
+      try {
+        await this.createChownJob(namespace, host, uid, gid);
+        return null;
+      } catch (err) {
+        return err.message;
+      }
+    });
+    ipcMain.handle('launcher:delete-chown-job', async (event, namespace, name) => {
+      if (!this.#fromSender(event)) return 'unknown window';
+      if (!this.kubectl) return 'kubectl is not installed';
+      try {
+        await kube.removeChownJob(this.kubectl, namespace, name);
         return null;
       } catch (err) {
         return err.message;
@@ -1252,25 +1281,26 @@ class WindowManager extends EventEmitter {
   }
 
   // What a launcher pane's form offers: the namespaces, the one to start on (where the
-  // last new pod went, while it exists), the app's pods, and the presets: image
+  // last new pod went, while it exists), the app's pods and chown jobs, and the presets: image
   // prefixes, host directories and the user and group a mount's chown starts on.
   // Whatever cannot be listed comes back empty, with
   // the reason in errors. The images under a prefix come separately (launcher:images).
   async launcherState() {
     const id = (n) => (Number.isInteger(n) && n >= 0 ? n : 1000);
     const presets = { prefixes: this.#imagePrefixes(), hostDirs: this.#hostDirs(), chownUid: id(this.config.chownUid), chownGid: id(this.config.chownGid) };
-    if (!this.kubectl) return { namespaces: [], namespace: null, pods: [], ...presets, errors: ['kubectl is not installed'] };
+    if (!this.kubectl) return { namespaces: [], namespace: null, pods: [], jobs: [], ...presets, errors: ['kubectl is not installed'] };
     const errors = [];
     const failed = (fallback) => (err) => {
       errors.push(err.message);
       return fallback;
     };
-    const [namespaces, pods] = await Promise.all([
+    const [namespaces, pods, jobs] = await Promise.all([
       kube.namespaces(this.kubectl).catch(failed([])),
       kube.pods(this.kubectl).catch(failed(this.pods)),
+      kube.chownJobs(this.kubectl).catch(failed([])),
     ]);
     const last = this.config.podNamespace;
-    return { namespaces, namespace: namespaces.includes(last) ? last : namespaces.includes('default') ? 'default' : namespaces[0] ?? null, pods, ...presets, errors };
+    return { namespaces, namespace: namespaces.includes(last) ? last : namespaces.includes('default') ? 'default' : namespaces[0] ?? null, pods, jobs, ...presets, errors };
   }
 
   // Makes a new pod (wanted as for 'pod:new:', see #resolvePod) without opening it.
@@ -1279,6 +1309,13 @@ class WindowManager extends EventEmitter {
     await kube.create(this.kubectl, namespace, pod, newPod.repo, newPod.tag, newPod.port, newPod.mounts);
     await this.refreshSessions();
     return { pod, namespace };
+  }
+
+  // Starts a chown job (see kube.createChownJob) on one of the host directories.
+  async createChownJob(namespace, host, uid, gid) {
+    if (!this.kubectl) throw new Error('kubectl is not installed');
+    if (!this.#hostDirs().includes(host)) throw new Error(`${host} is not one of the host directories`);
+    await kube.createChownJob(this.kubectl, namespace, host, uid, gid);
   }
 
   async createNamespace(name) {
