@@ -23,6 +23,8 @@ const DEFAULT_PORT = 3000; // the desktop UI in linuxserver's Selkies and KasmVN
 // Kubernetes names (DNS-1123 labels) for namespaces and pods.
 const validName = (name) => typeof name === 'string' && name.length <= 63 && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name);
 const validPort = (port) => Number.isInteger(port) && port > 0 && port < 65536;
+// A new pod's browser port is optional: null for a pod with no UI to show.
+const validBrowserPort = (port) => port === null || validPort(port);
 // An absolute path with no "." or ".." parts, such as a host directory or where it
 // goes in a pod.
 const validPath = (p) => typeof p === 'string' && p.length <= 1024 && p.startsWith('/') && !/[\0\n]/.test(p) &&
@@ -67,8 +69,8 @@ function createNamespace(bin, name) {
   return kubectl(bin, ['create', 'namespace', name]);
 }
 
-// The app's pods in every namespace: [{ namespace, name, image, app, tag, port, mounts,
-// phase, ready }],
+// The app's pods in every namespace: [{ namespace, name, image, app, tag, port (null for
+// no browser port), mounts, phase, ready }],
 // sorted by namespace then name.
 async function pods(bin) {
   const out = await kubectl(bin, ['get', 'pods', '--all-namespaces', '-l', MANAGED, '-o', 'json']);
@@ -76,7 +78,9 @@ async function pods(bin) {
     .map((p) => {
       const annotations = p.metadata.annotations ?? {};
       const ref = registry.parseImage(annotations[IMAGE_ANNOTATION]);
-      const port = Number(annotations[PORT_ANNOTATION]) || DEFAULT_PORT;
+      // An empty port annotation is a pod with no browser port; none at all, one from
+      // before the port was asked for.
+      const port = annotations[PORT_ANNOTATION] === '' ? null : Number(annotations[PORT_ANNOTATION]) || DEFAULT_PORT;
       let mounts = [];
       try {
         mounts = JSON.parse(annotations[MOUNTS_ANNOTATION] ?? '[]');
@@ -91,7 +95,7 @@ async function pods(bin) {
 // images expect, with the shared memory and seccomp settings the desktops need, and
 // mounts' host directories (see checkMounts). Before the app starts, an init container
 // running as root gives each directory with chown, and everything in it, to its user
-// and group. It runs each time the pod starts.
+// and group. It runs each time the pod starts. port is the browser port, or null.
 function podSpec(namespace, name, repo, tag, port, mounts = []) {
   const { uid, gid } = os.userInfo();
   const image = `${repo}:${tag}`;
@@ -103,7 +107,7 @@ function podSpec(namespace, name, repo, tag, port, mounts = []) {
       name,
       namespace,
       labels: { 'app.kubernetes.io/managed-by': 'lan-terminal', 'app.kubernetes.io/name': app.replace(/[^a-z0-9-]/g, '-') },
-      annotations: { [IMAGE_ANNOTATION]: image, [PORT_ANNOTATION]: String(port), [MOUNTS_ANNOTATION]: JSON.stringify(mounts) },
+      annotations: { [IMAGE_ANNOTATION]: image, [PORT_ANNOTATION]: port === null ? '' : String(port), [MOUNTS_ANNOTATION]: JSON.stringify(mounts) },
     },
     spec: {
       restartPolicy: 'Always',
@@ -123,7 +127,7 @@ function podSpec(namespace, name, repo, tag, port, mounts = []) {
           { name: 'PGID', value: String(gid) },
           { name: 'TZ', value: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Etc/UTC' },
         ],
-        ports: [{ containerPort: port }],
+        ...(port !== null && { ports: [{ containerPort: port }] }),
         volumeMounts: [
           { name: 'config', mountPath: '/config' },
           { name: 'shm', mountPath: '/dev/shm' },
@@ -149,7 +153,7 @@ function freeName(app, tag, taken) {
 
 function create(bin, namespace, name, repo, tag, port, mounts = []) {
   if (!validName(namespace) || !validName(name)) throw new Error(`bad pod: ${namespace}/${name}`);
-  if (!registry.validRepo(repo) || !registry.validTag(tag) || !validPort(port)) throw new Error(`bad image: ${repo}:${tag} port ${port}`);
+  if (!registry.validRepo(repo) || !registry.validTag(tag) || !validBrowserPort(port)) throw new Error(`bad image: ${repo}:${tag} port ${port}`);
   checkMounts(mounts);
   return kubectl(bin, ['create', '-f', '-'], { input: JSON.stringify(podSpec(namespace, name, repo, tag, port, mounts)) });
 }
@@ -187,4 +191,4 @@ function forward(bin, namespace, name, port) {
   });
 }
 
-module.exports = { DEFAULT_PORT, validName, validPort, validPath, checkMounts, namespaces, createNamespace, pods, podSpec, freeName, create, remove, waitReady, forward };
+module.exports = { DEFAULT_PORT, validName, validPort, validBrowserPort, validPath, checkMounts, namespaces, createNamespace, pods, podSpec, freeName, create, remove, waitReady, forward };

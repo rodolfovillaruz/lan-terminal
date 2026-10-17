@@ -308,9 +308,10 @@ class WindowManager extends EventEmitter {
       const term = this.#fromSender(event);
       if (term) this.closePane(term.id, paneId);
     });
+    // The home tool ends resize mode, so the form takes the keyboard.
     ipcMain.on('pane:home', (event, paneId) => {
       const term = this.#fromSender(event);
-      if (term) this.homePane(term.id, paneId);
+      if (term && this.homePane(term.id, paneId)) this.setResizeMode(term.id, false);
     });
     ipcMain.on('pane:pin', (event, paneId, on) => {
       const term = this.#fromSender(event);
@@ -394,6 +395,17 @@ class WindowManager extends EventEmitter {
       if (!this.#fromSender(event)) return 'unknown window';
       try {
         await this.deletePod(namespace, pod);
+        return null;
+      } catch (err) {
+        return err.message;
+      }
+    });
+    // Creating a pod from the form leaves the form as it is: it answers null, or what
+    // went wrong, and the pod shows in the form's list.
+    ipcMain.handle('launcher:create-pod', async (event, wanted) => {
+      if (!this.#fromSender(event)) return null;
+      try {
+        await this.createPod(wanted);
         return null;
       } catch (err) {
         return err.message;
@@ -807,9 +819,12 @@ class WindowManager extends EventEmitter {
       if (!pane.ready) pane.pending += data;
       else if (!term.win.isDestroyed()) term.win.webContents.send('pty:data', id, data);
     });
+    // A shell that exits on its own leaves a New pane form in its place; one closed
+    // with closePane takes its place with it.
     proc.onExit(() => {
       pane.exited = true;
-      this.#removePane(term, id);
+      if (pane.closing) this.#removePane(term, id);
+      else this.#formInPlace(term, id);
     });
     return id;
   }
@@ -990,8 +1005,10 @@ class WindowManager extends EventEmitter {
           this.refreshSessions();
         }
         show(null, null);
+        const found = (await kube.pods(this.kubectl)).find((p) => p.namespace === namespace && p.name === pod);
+        if (found && found.port === null) return show(null, 'The pod has no browser port to show');
         await kube.waitReady(this.kubectl, namespace, pod);
-        const port = (await kube.pods(this.kubectl)).find((p) => p.namespace === namespace && p.name === pod)?.port ?? kube.DEFAULT_PORT;
+        const port = found?.port ?? kube.DEFAULT_PORT;
         if (pane.exited) return;
         const { child, url } = await kube.forward(this.kubectl, namespace, pod, port);
         if (pane.exited) return child.kill();
@@ -1056,7 +1073,7 @@ class WindowManager extends EventEmitter {
   // A shell's pty is killed, and its exit removes the pane. A multiplexer client
   // only detaches; an app's container keeps running. A device's mirror stops.
   #endPane(pane) {
-    if (pane.pty) pane.pty.kill();
+    if (pane.pty && !pane.exited) pane.pty.kill();
     pane.exited = true;
     clearTimeout(pane.retry);
     pane.mirror?.stop();
@@ -1169,7 +1186,8 @@ class WindowManager extends EventEmitter {
   }
 
   // 'pod:<namespace>:<name>' opens a pod; 'pod:new:<json>' makes one from { namespace,
-  // repo, tag, port, mounts } (mounts: [{ host, path, chown }], each host one of hostDirs),
+  // repo, tag, port, mounts } (port the browser port, or null for none; mounts:
+  // [{ host, path, chown }], each host one of hostDirs),
   // named <app>-<tag>-<n> with the smallest n free in the namespace, and makes the
   // namespace the one the next new pod form starts on.
   async #resolvePod(spec) {
@@ -1186,8 +1204,8 @@ class WindowManager extends EventEmitter {
     } catch {
       throw new Error('bad new pod');
     }
-    const { namespace, repo, tag, port, mounts = [] } = wanted ?? {};
-    if (!kube.validName(namespace) || !registry.validRepo(repo) || !registry.validTag(tag) || !kube.validPort(port)) {
+    const { namespace, repo, tag, port = null, mounts = [] } = wanted ?? {};
+    if (!kube.validName(namespace) || !registry.validRepo(repo) || !registry.validTag(tag) || !kube.validBrowserPort(port)) {
       throw new Error('bad pod image');
     }
     kube.checkMounts(mounts);
@@ -1255,33 +1273,46 @@ class WindowManager extends EventEmitter {
     return { namespaces, namespace: namespaces.includes(last) ? last : namespaces.includes('default') ? 'default' : namespaces[0] ?? null, pods, ...presets, errors };
   }
 
+  // Makes a new pod (wanted as for 'pod:new:', see #resolvePod) without opening it.
+  async createPod(wanted) {
+    const { pod, namespace, newPod } = await this.#resolvePod(`new:${JSON.stringify(wanted)}`);
+    await kube.create(this.kubectl, namespace, pod, newPod.repo, newPod.tag, newPod.port, newPod.mounts);
+    await this.refreshSessions();
+    return { pod, namespace };
+  }
+
   async createNamespace(name) {
     if (!this.kubectl) throw new Error('kubectl is not installed');
     await kube.createNamespace(this.kubectl, name);
   }
 
-  // Deletes one of the app's pods and removes the panes that showed it.
+  // Deletes one of the app's pods and puts New pane forms in place of the panes that
+  // showed it.
   async deletePod(namespace, pod) {
     if (!this.kubectl) throw new Error('kubectl is not installed');
     await kube.remove(this.kubectl, namespace, pod);
     for (const term of [...this.terminals.values()]) {
       for (const pane of [...term.panes.values()]) {
-        if (pane.pod !== pod || pane.namespace !== namespace) continue;
-        this.#endPane(pane);
-        this.#removePane(term, pane.id);
+        if (pane.pod === pod && pane.namespace === namespace) this.#formInPlace(term, pane.id);
       }
     }
     await this.refreshSessions();
   }
 
-  // Stops an app's container and removes the panes that showed it.
+  // Stops an app's container and puts New pane forms in place of the panes that showed it.
   async stopApp(app, instance) {
     if (!this.docker) throw new Error('docker is not installed');
     await ls.stop(this.docker, app, instance);
     for (const term of [...this.terminals.values()]) {
-      for (const pane of [...term.panes.values()]) if (pane.app === app && pane.instance === instance) this.#removePane(term, pane.id);
+      for (const pane of [...term.panes.values()]) if (pane.app === app && pane.instance === instance) this.#formInPlace(term, pane.id);
     }
     await this.refreshSessions();
+  }
+
+  // A pane that closed without being asked to: a New pane form takes its place.
+  #formInPlace(term, paneId) {
+    if (term.closed || !term.panes.has(paneId)) return;
+    this.#swapPane(term, paneId, { launcher: true });
   }
 
   #removePane(term, paneId) {
@@ -1685,6 +1716,7 @@ class WindowManager extends EventEmitter {
     const term = this.get(id);
     const pane = term?.panes.get(paneId);
     if (!pane || (term.panes.size === 1 && !term.locked)) return false;
+    pane.closing = true;
     this.#endPane(pane);
     if (!pane.pty) this.#removePane(term, paneId);
     return true;

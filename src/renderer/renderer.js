@@ -621,7 +621,8 @@ async function main() {
 
   // A new pane's form: open one of the app's pods in a namespace, make a new pod from
   // any image, or show the layout planner. The namespace starts on the one the last
-  // new pod went to. Picking one turns the pane into it.
+  // new pod went to. Picking a pod or the planner turns the pane into it; a new pod
+  // joins the list and the form stays. A pod with no browser port has nothing to show.
   //
   // A new pod's image is a breadcrumb: a preset prefix (lscr.io/linuxserver/ to start
   // with), then a crumb for each part typed before a "/", then the name. The name's
@@ -659,7 +660,7 @@ async function main() {
         </div>
         <label class="row">Tag <input name="tag" list="launcher-tags-${id}" value="latest" autocomplete="off" spellcheck="false"></label>
         <datalist id="launcher-tags-${id}"></datalist>
-        <label class="row">UI port <input name="port" type="number" min="1" max="65535" value="3000"></label>
+        <label class="row">Browser port <input name="port" type="number" min="1" max="65535" placeholder="none" title="The port the image serves its browser UI on (3000 for linuxserver's); empty for none"></label>
         <div class="row">Mounts <button type="button" data-act="add-mount" title="Mount a host directory in the pod">+ Mount</button></div>
         <ul class="mounts"></ul>
         <p class="about"></p>
@@ -728,8 +729,12 @@ async function main() {
       podList.replaceChildren(...pods.map((p) => {
         const li = document.createElement('li');
         const b = button(p.name, p.image ?? '', () => launch(`pod:${p.namespace}:${p.name}`, `Opening ${p.namespace}/${p.name}…`));
+        if (p.port === null) {
+          b.disabled = true;
+          b.title = 'No browser port to show';
+        }
         const what = document.createElement('span');
-        what.textContent = [`${p.app ? `${p.app}:${p.tag}` : 'unknown image'}`, p.ready ? 'ready' : p.phase, ...p.mounts.map((m) => `${m.host} → ${m.path}${m.chown ? ` (${m.chown.uid}:${m.chown.gid})` : ''}`)].join(' · ');
+        what.textContent = [`${p.app ? `${p.app}:${p.tag}` : 'unknown image'}`, p.ready ? 'ready' : p.phase, ...(p.port === null ? ['no browser port'] : []), ...p.mounts.map((m) => `${m.host} → ${m.path}${m.chown ? ` (${m.chown.uid}:${m.chown.gid})` : ''}`)].join(' · ');
         what.title = p.image ?? '';
         if (deleting.has(`${p.namespace}/${p.name}`)) {
           li.className = 'deleting';
@@ -924,6 +929,18 @@ async function main() {
       if (err) say(err, true);
     };
 
+    // A new pod shows in the form's list, and the form stays.
+    const createPod = async (wanted, name) => {
+      if (busy) return;
+      busy = true;
+      say(`Creating a ${name} pod in ${wanted.namespace}…`);
+      const err = await window.terminal.createPod(wanted);
+      busy = false;
+      if (err) return say(err, true);
+      await load();
+      say(`Created a ${name} pod in ${wanted.namespace}; open it from the list.`);
+    };
+
     nsSelect.addEventListener('change', () => {
       newNs.hidden = nsSelect.value !== NEW_NS;
       if (!newNs.hidden) form.elements.newNamespace.focus();
@@ -1013,13 +1030,14 @@ async function main() {
       const ns = nsSelect.value;
       const name = imageInput.value.trim();
       const tag = form.elements.tag.value.trim() || 'latest';
-      const port = Number(form.elements.port.value);
+      const portText = form.elements.port.value.trim();
+      const port = portText ? Number(portText) : null;
       const wanted = mounts.filter((m) => m.path);
       if (!ns || ns === NEW_NS) return say('Pick a namespace first.', true);
       if (prefixSelect.value === NEW_PREFIX && !crumbs.length) return say('Pick where the image name starts, or type it in full, e.g. ghcr.io/org/app.', true);
       if (!COMPONENT.test(name)) return say('Pick an image, e.g. webtop.', true);
       if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(tag)) return say('That is not an image tag.', true);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) return say('The UI port is a number from 1 to 65535.', true);
+      if (port !== null && !(Number.isInteger(port) && port >= 1 && port <= 65535)) return say('The browser port is a number from 1 to 65535, or empty for none.', true);
       const bad = wanted.find((m) => !m.path.startsWith('/'));
       if (bad) return say(`A path in the pod starts with "/": ${bad.path}`, true);
       const isId = (v) => /^\d+$/.test(String(v).trim()) && Number(v) < 2 ** 31;
@@ -1027,7 +1045,7 @@ async function main() {
       if (badId) return say(`The user and group to chown ${badId.host} to are whole numbers, e.g. 1000.`, true);
       const repo = prefix() + name;
       const sent = wanted.map((m) => ({ host: m.host, path: m.path, ...(m.chown && { chown: { uid: Number(m.uid), gid: Number(m.gid) } }) }));
-      launch(`pod:new:${JSON.stringify({ namespace: ns, repo, tag, port, mounts: sent })}`, `Creating a ${name} pod in ${ns}…`);
+      createPod({ namespace: ns, repo, tag, port, mounts: sent }, name);
     });
     load();
 
