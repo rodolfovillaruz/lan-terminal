@@ -250,6 +250,8 @@ html, body {
 .launcher .jobs button.delete:hover, .launcher .jobs button.delete:focus-visible { border-color: #ff8a80; color: #ff8a80; }
 .launcher .pods li { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
 .launcher .pods li span, .launcher .pods li.none { opacity: 0.6; }
+.launcher .pods button.copy { margin-left: auto; padding: 2px 8px; }
+.launcher .pods button.copy + button.delete { margin-left: 0; padding: 2px 8px; }
 .launcher .pods button.delete { margin-left: auto; padding: 2px 8px; }
 .launcher .pods button.delete:hover, .launcher .pods button.delete:focus-visible { border-color: #ff8a80; color: #ff8a80; }
 .launcher .about { opacity: 0.6; margin: 6px 0; max-height: 4.5em; overflow: hidden; }

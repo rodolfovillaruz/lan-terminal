@@ -756,7 +756,9 @@ async function main() {
           li.append(b, what, spin);
           return li;
         }
-        li.append(b, what, button('✕', `Delete ${p.namespace}/${p.name}`, () => deletePod(p), 'delete'));
+        const copy = button('⧉', `Copy ${p.namespace}/${p.name}'s image, tag, browser port and mounts into New pod`, () => copyPod(p), 'copy');
+        copy.disabled = !p.image;
+        li.append(b, what, copy, button('✕', `Delete ${p.namespace}/${p.name}`, () => deletePod(p), 'delete'));
         return li;
       }));
       if (!pods.length) {
@@ -765,6 +767,31 @@ async function main() {
         li.textContent = ns ? `No pods from this app in ${ns} yet.` : 'No namespace.';
         podList.append(li);
       }
+    };
+
+    // Fills New pod in as pod p was made: its image (from the longest preset prefix it
+    // starts with, or typed in full), tag, browser port and the mounts of host
+    // directories still on the list.
+    const copyPod = (p) => {
+      const colon = p.image.lastIndexOf(':');
+      const repo = p.image.slice(0, colon);
+      const start = st.prefixes.filter((x) => repo.startsWith(x)).sort((a, b) => b.length - a.length)[0];
+      prefixSelect.value = start ?? NEW_PREFIX;
+      newPrefix.hidden = true;
+      const parts = repo.slice(start?.length ?? 0).split('/');
+      imageInput.value = parts.pop();
+      crumbs = parts;
+      drawCrumbs();
+      loadImages();
+      form.elements.tag.value = p.image.slice(colon + 1);
+      form.elements.port.value = p.port ?? '';
+      const kept = p.mounts.filter((m) => st.hostDirs.includes(m.host));
+      mounts.splice(0, mounts.length, ...kept.map((m) => ({ host: m.host, path: m.path, chown: Boolean(m.chown), uid: m.chown?.uid ?? st.chownUid, gid: m.chown?.gid ?? st.chownGid })));
+      drawMounts();
+      imageInput.focus();
+      const left = p.mounts.filter((m) => !kept.includes(m)).map((m) => m.host);
+      if (left.length) say(`Copied ${p.namespace}/${p.name}, but not its mounts of ${left.join(', ')}: they are no longer host directories.`, true);
+      else say(`Copied ${p.namespace}/${p.name}; Create pod makes another like it.`);
     };
 
     // The crumbs between the prefix and the name; clicking one goes back to it.
