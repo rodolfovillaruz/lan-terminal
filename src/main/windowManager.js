@@ -338,11 +338,11 @@ class WindowManager extends EventEmitter {
         return err.message;
       }
     });
-    // Deleting a pod from the form, once the dialog over the window says yes. Answers
-    // false when cancelled, true when deleted, or what went wrong.
-    ipcMain.handle('launcher:delete-pod', async (event, namespace, pod) => {
+    // Deleting a pod from the form: a dialog over the window asks first (true for yes),
+    // then the delete answers null, or what went wrong.
+    ipcMain.handle('launcher:confirm-delete-pod', async (event, namespace, pod) => {
       const term = this.#fromSender(event);
-      if (!term || !kube.validName(namespace) || !kube.validName(pod)) return 'unknown pod';
+      if (!term || !kube.validName(namespace) || !kube.validName(pod)) return false;
       const { response } = await dialog.showMessageBox(term.win, {
         type: 'warning',
         title: 'Delete pod',
@@ -352,10 +352,13 @@ class WindowManager extends EventEmitter {
         defaultId: 0,
         cancelId: 0,
       });
-      if (response !== 1) return false;
+      return response === 1;
+    });
+    ipcMain.handle('launcher:delete-pod', async (event, namespace, pod) => {
+      if (!this.#fromSender(event)) return 'unknown window';
       try {
         await this.deletePod(namespace, pod);
-        return true;
+        return null;
       } catch (err) {
         return err.message;
       }

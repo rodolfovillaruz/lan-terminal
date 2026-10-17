@@ -231,4 +231,21 @@ html, body {
 .launcher .about { opacity: 0.6; margin: 6px 0; max-height: 4.5em; overflow: hidden; }
 .launcher .about:empty { display: none; }
 .launcher .status { min-height: 1.2em; opacity: 0.75; }
+/* While a pod is deleted: a spinner in its row, in place of its ✕, and before the status. */
+.launcher .spinner, .launcher .status.waiting::before {
+  content: '';
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  box-sizing: border-box;
+  border: 2px solid rgba(230, 230, 230, 0.25);
+  border-top-color: rgba(80, 160, 255, 0.95);
+  border-radius: 50%;
+  vertical-align: -0.1em;
+  animation: launcher-spin 0.8s linear infinite;
+}
+.launcher .spinner { margin-left: auto; margin-right: 8px; }
+.launcher .status.waiting::before { margin-right: 8px; }
+.launcher .pods li.deleting > :not(.spinner) { opacity: 0.4; }
+@keyframes launcher-spin { to { transform: rotate(360deg); } }
 .launcher .status.error { color: #ff8a80; opacity: 1; }

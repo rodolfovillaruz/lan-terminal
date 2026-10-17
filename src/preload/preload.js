@@ -19,7 +19,8 @@ contextBridge.exposeInMainWorld('terminal', {
   launcherState: () => ipcRenderer.invoke('launcher:state'),
   createNamespace: (name) => ipcRenderer.invoke('launcher:namespace', name),
   launch: (paneId, choice) => ipcRenderer.invoke('launcher:open', paneId, choice),
-  // Asks first; false when cancelled, true when deleted, or an error message.
+  // true when the dialog says yes; then deletePod answers null, or an error message.
+  confirmDeletePod: (namespace, pod) => ipcRenderer.invoke('launcher:confirm-delete-pod', namespace, pod),
   deletePod: (namespace, pod) => ipcRenderer.invoke('launcher:delete-pod', namespace, pod),
   copy: (text) => ipcRenderer.send('clipboard:write', text),
   paste: () => ipcRenderer.invoke('clipboard:read'),

@@ -662,11 +662,18 @@ async function main() {
     const NEW_NS = '\u0000new'; // the "New namespace…" option, which no namespace can be named
     let st = null; // the last launcherState
     let busy = false;
+    // The pods being deleted, as 'namespace/name'; several can be at once. Only one
+    // dialog asks at a time.
+    const deleting = new Set();
+    let confirming = false;
 
-    const say = (text, error = false) => {
+    // waiting puts a spinner before the text.
+    const say = (text, error = false, waiting = false) => {
       status.textContent = text;
       status.classList.toggle('error', error);
+      status.classList.toggle('waiting', waiting);
     };
+    const sayDeleting = () => deleting.size > 0 && (say(`Deleting ${[...deleting].join(', ')}…`, false, true), true);
     const drawPods = () => {
       const ns = nsSelect.value;
       const pods = (st?.pods ?? []).filter((p) => p.namespace === ns);
@@ -678,6 +685,15 @@ async function main() {
         b.addEventListener('click', () => launch(`pod:${p.namespace}:${p.name}`, `Opening ${p.namespace}/${p.name}…`));
         const what = document.createElement('span');
         what.textContent = `${p.app ? `${p.app}:${p.tag}` : 'unknown image'} · ${p.ready ? 'ready' : p.phase}`;
+        if (deleting.has(`${p.namespace}/${p.name}`)) {
+          li.className = 'deleting';
+          b.disabled = true;
+          const spin = document.createElement('i');
+          spin.className = 'spinner';
+          spin.title = 'Deleting…';
+          li.append(b, what, spin);
+          return li;
+        }
         const del = document.createElement('button');
         del.type = 'button';
         del.className = 'delete';
@@ -715,18 +731,26 @@ async function main() {
       drawPods();
       drawImage();
       say(st.errors.join(' · '), st.errors.length > 0);
+      if (!st.errors.length) sayDeleting();
     };
     const deletePod = async (p) => {
-      if (busy) return;
-      busy = true;
       const label = `${p.namespace}/${p.name}`;
-      say(`Deleting ${label}…`);
-      const res = await window.terminal.deletePod(p.namespace, p.name);
-      busy = false;
-      if (res === false) return say('');
-      if (res !== true) return say(res, true);
+      if (confirming || deleting.has(label)) return;
+      confirming = true;
+      const yes = await window.terminal.confirmDeletePod(p.namespace, p.name);
+      confirming = false;
+      if (!yes) return;
+      deleting.add(label);
+      drawPods();
+      sayDeleting();
+      const err = await window.terminal.deletePod(p.namespace, p.name);
+      deleting.delete(label);
+      if (err) {
+        drawPods();
+        return say(`${label}: ${err}`, true);
+      }
       await load();
-      say(`Deleted ${label}.`);
+      if (!sayDeleting()) say(`Deleted ${label}.`);
     };
     const launch = async (choice, message) => {
       if (busy) return;
