@@ -28,9 +28,12 @@ const validPort = (port) => Number.isInteger(port) && port > 0 && port < 65536;
 const validPath = (p) => typeof p === 'string' && p.length <= 1024 && p.startsWith('/') && !/[\0\n]/.test(p) &&
   path.posix.normalize(p) === p && (p === '/' || !p.endsWith('/'));
 const RESERVED_PATHS = ['/config', '/dev/shm']; // the pod's own volumes
+const CHOWN_IMAGE = 'docker.io/library/busybox:1.37';
+const validId = (id) => Number.isInteger(id) && id >= 0 && id < 2 ** 31;
 
-// [{ host, path }]: each host directory goes to an absolute path in the pod, no two
-// to the same one nor over the pod's own volumes. Throws when they cannot.
+// [{ host, path, chown }]: each host directory goes to an absolute path in the pod, no
+// two to the same one nor over the pod's own volumes. chown, if there, is { uid, gid }
+// for the directory to belong to. Throws when they cannot.
 function checkMounts(mounts) {
   if (!Array.isArray(mounts) || mounts.length > 32) throw new Error('bad mounts');
   const seen = new Set(RESERVED_PATHS);
@@ -39,6 +42,7 @@ function checkMounts(mounts) {
     if (!validPath(m.path) || m.path === '/') throw new Error(`a path in the pod is an absolute path other than /: ${m.path}`);
     if (RESERVED_PATHS.includes(m.path)) throw new Error(`${m.path} is the pod's own volume`);
     if (seen.has(m.path)) throw new Error(`two volumes go to ${m.path} in the pod`);
+    if (m.chown && !(validId(m.chown.uid) && validId(m.chown.gid))) throw new Error(`a user or group id is a whole number from 0: ${m.host}`);
     seen.add(m.path);
   }
 }
@@ -85,7 +89,9 @@ async function pods(bin) {
 
 // The pod for a new instance of repo:tag, run as the host user as the linuxserver
 // images expect, with the shared memory and seccomp settings the desktops need, and
-// mounts' host directories (see checkMounts).
+// mounts' host directories (see checkMounts). Before the app starts, an init container
+// running as root gives each directory with chown, and everything in it, to its user
+// and group. It runs each time the pod starts.
 function podSpec(namespace, name, repo, tag, port, mounts = []) {
   const { uid, gid } = os.userInfo();
   const image = `${repo}:${tag}`;
@@ -102,6 +108,13 @@ function podSpec(namespace, name, repo, tag, port, mounts = []) {
     spec: {
       restartPolicy: 'Always',
       securityContext: { seccompProfile: { type: 'Unconfined' } },
+      initContainers: mounts.flatMap((m, i) => (m.chown ? [{
+        name: `chown-${i}`,
+        image: CHOWN_IMAGE,
+        command: ['chown', '-R', `${m.chown.uid}:${m.chown.gid}`, '/mnt'],
+        securityContext: { runAsUser: 0, runAsGroup: 0 },
+        volumeMounts: [{ name: `host-${i}`, mountPath: '/mnt' }],
+      }] : [])),
       containers: [{
         name: 'app',
         image,

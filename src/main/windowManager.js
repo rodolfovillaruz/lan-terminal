@@ -1169,7 +1169,7 @@ class WindowManager extends EventEmitter {
   }
 
   // 'pod:<namespace>:<name>' opens a pod; 'pod:new:<json>' makes one from { namespace,
-  // repo, tag, port, mounts } (mounts: [{ host, path }], each host one of hostDirs),
+  // repo, tag, port, mounts } (mounts: [{ host, path, chown }], each host one of hostDirs),
   // named <app>-<tag>-<n> with the smallest n free in the namespace, and makes the
   // namespace the one the next new pod form starts on.
   async #resolvePod(spec) {
@@ -1199,7 +1199,7 @@ class WindowManager extends EventEmitter {
     for (const term of this.terminals.values()) for (const p of term.panes.values()) if (p.namespace === namespace) taken.add(p.pod);
     this.config.podNamespace = namespace;
     saveConfig(this.config);
-    return { pod: kube.freeName(app, tag, taken), namespace, newPod: { repo, tag, port, mounts: mounts.map((m) => ({ host: m.host, path: m.path })) } };
+    return { pod: kube.freeName(app, tag, taken), namespace, newPod: { repo, tag, port, mounts: mounts.map((m) => ({ host: m.host, path: m.path, ...(m.chown && { chown: { uid: m.chown.uid, gid: m.chown.gid } }) })) } };
   }
 
   #imagePrefixes() {
@@ -1235,10 +1235,12 @@ class WindowManager extends EventEmitter {
 
   // What a launcher pane's form offers: the namespaces, the one to start on (where the
   // last new pod went, while it exists), the app's pods, and the presets: image
-  // prefixes and host directories. Whatever cannot be listed comes back empty, with
+  // prefixes, host directories and the user and group a mount's chown starts on.
+  // Whatever cannot be listed comes back empty, with
   // the reason in errors. The images under a prefix come separately (launcher:images).
   async launcherState() {
-    const presets = { prefixes: this.#imagePrefixes(), hostDirs: this.#hostDirs() };
+    const id = (n) => (Number.isInteger(n) && n >= 0 ? n : 1000);
+    const presets = { prefixes: this.#imagePrefixes(), hostDirs: this.#hostDirs(), chownUid: id(this.config.chownUid), chownGid: id(this.config.chownGid) };
     if (!this.kubectl) return { namespaces: [], namespace: null, pods: [], ...presets, errors: ['kubectl is not installed'] };
     const errors = [];
     const failed = (fallback) => (err) => {
