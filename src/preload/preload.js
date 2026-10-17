@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('terminal', {
   exitResizeMode: () => ipcRenderer.send('resizeMode:exit'),
   // Resize mode's pane tools. zone: 'center' (trade places) or a side of the target.
   closePane: (paneId) => ipcRenderer.send('pane:close', paneId),
+  homePane: (paneId) => ipcRenderer.send('pane:home', paneId),
   pinPane: (paneId, on) => ipcRenderer.send('pane:pin', paneId, on),
   maximizePane: (paneId) => ipcRenderer.send('pane:maximize', paneId),
   reloadPane: (paneId) => ipcRenderer.send('pane:reload', paneId),

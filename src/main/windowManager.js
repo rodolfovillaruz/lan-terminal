@@ -300,11 +300,16 @@ class WindowManager extends EventEmitter {
         this.setResizeMode(term.id, false);
       }
     });
-    // The tools on a pane in resize mode: close, pin over a maximized pane, maximize
-    // (paneId null puts the panes back), reload, and dropping a pane on another (see movePane).
+    // The tools on a pane in resize mode: close, back to a New pane form, pin over a
+    // maximized pane, maximize (paneId null puts the panes back), reload, and dropping
+    // a pane on another (see movePane).
     ipcMain.on('pane:close', (event, paneId) => {
       const term = this.#fromSender(event);
       if (term) this.closePane(term.id, paneId);
+    });
+    ipcMain.on('pane:home', (event, paneId) => {
+      const term = this.#fromSender(event);
+      if (term) this.homePane(term.id, paneId);
     });
     ipcMain.on('pane:pin', (event, paneId, on) => {
       const term = this.#fromSender(event);
@@ -1226,12 +1231,15 @@ class WindowManager extends EventEmitter {
   }
 
   // In any pane, Ctrl+Shift+Alt+Z maximizes the active pane or puts it back,
-  // Ctrl+Shift+Alt+F turns always on top on or off, and Ctrl+Shift+Alt+R resize mode.
+  // Ctrl+Shift+Alt+Q puts a New pane form in its place, Ctrl+Shift+Alt+F turns
+  // always on top on or off, and Ctrl+Shift+Alt+R resize mode.
   #windowKey(term, input) {
     if (input.type !== 'keyDown' || input.isAutoRepeat) return false;
     if (!(input.control && input.shift && input.alt && !input.meta)) return false;
     if (input.code === 'KeyZ') {
       if (term.activePane) this.maximizePane(term.id, term.maximized ? null : term.activePane);
+    } else if (input.code === 'KeyQ') {
+      if (term.activePane) this.homePane(term.id, term.activePane);
     } else if (input.code === 'KeyF') {
       this.setAlwaysOnTop(term.id, !term.alwaysOnTop);
     } else if (input.code === 'KeyR') {
@@ -1499,6 +1507,15 @@ class WindowManager extends EventEmitter {
     const pane = term?.panes.get(paneId);
     if (!pane || term.closed) return false;
     this.#swapPane(term, paneId, leafSource(paneLeaf(pane)));
+    return true;
+  }
+
+  // Closes a pane and puts a New pane form in its place. A form stays as it is.
+  homePane(id, paneId) {
+    const term = this.get(id);
+    const pane = term?.panes.get(paneId);
+    if (!pane || term.closed || pane.kind === 'launcher') return false;
+    this.#swapPane(term, paneId, { launcher: true });
     return true;
   }
 

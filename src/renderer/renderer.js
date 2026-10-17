@@ -1011,7 +1011,8 @@ async function main() {
     return h;
   };
   // Also in resize mode, each pane under the pointer shows what a press there does:
-  //  - its tools in its top left corner: ✕ closes it, 📌 pins it over a maximized pane,
+  //  - its tools in its top left corner: ✕ closes it, 🏠 puts a New pane form in its
+  //    place (as Ctrl+Shift+Alt+Q does), 📌 pins it over a maximized pane,
   //    ⛶ maximizes it (⊡ puts the panes back), ⟳ reloads it;
   //  - within an eighth of its size from its centre, a hand: drag it onto another pane
   //    to trade places (its middle) or to go beside it (an edge), as in the planner;
@@ -1037,6 +1038,7 @@ async function main() {
   };
   let toolsPane = null; // the pane the tools are on
   const closeTool = tool('✕', 'Close pane', () => window.terminal.closePane(toolsPane));
+  const homeTool = tool('🏠', 'Home: close the pane and put a New pane form in its place (Ctrl+Shift+Alt+Q)', () => window.terminal.homePane(toolsPane));
   const pinTool = tool('📌', '', () => window.terminal.pinPane(toolsPane, !pinned.has(toolsPane)));
   const maxTool = tool('⛶', '', () => window.terminal.maximizePane(maxedId === toolsPane ? null : toolsPane));
   tool('⟳', 'Reload: close the pane and open what it showed again, in the same place', () => window.terminal.reloadPane(toolsPane));
@@ -1085,6 +1087,7 @@ async function main() {
     if (!hit) return;
     Object.assign(tools.style, { left: `${hit.r.left + 6}px`, top: `${hit.r.top + 6}px` });
     closeTool.disabled = panes.size === 1;
+    homeTool.disabled = panes.get(hit.id)?.el.classList.contains('launcher') ?? false;
     pinTool.classList.toggle('on', pinned.has(hit.id));
     pinTool.title = pinned.has(hit.id) ? 'Unpin: hide it behind a maximized pane again' : 'Pin: keep it in sight, in its place, over a maximized pane';
     maxTool.textContent = maxedId === hit.id ? '⊡' : '⛶';
