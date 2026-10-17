@@ -53,7 +53,7 @@ const DROIDCAM_MODULE = '/sys/module/v4l2loopback_dc';
 // setCameraFillWidth), or { container: name } for a container labelled
 // lan-terminal.pane=<name> (see linuxserver.js), { pod, namespace } for a Kubernetes
 // pod the app runs (see kube.js), or { launcher: true } for the form that opens one
-// or a shell in a new pane. A saved pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g.
+// or the layout planner in a new pane. A saved pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g.
 // { tmux: 'work' }), { linuxserver: app, name, tag }, { scrcpy: serial, display,
 // startApp }, where startApp is the app last opened on a new display, which opens
 // again when the display comes back, { page: url }, the page it was last on,
@@ -371,7 +371,7 @@ class WindowManager extends EventEmitter {
     ipcMain.handle('launcher:open', async (event, paneId, choice) => {
       const term = this.#fromSender(event);
       if (term?.panes.get(paneId)?.kind !== 'launcher') return 'the pane is no longer a new pane';
-      if (!(choice === 'shell' || (typeof choice === 'string' && choice.startsWith('pod:')))) return 'unknown choice';
+      if (!(choice === 'planner' || (typeof choice === 'string' && choice.startsWith('pod:')))) return 'unknown choice';
       try {
         await this.setPaneSource(term.id, paneId, choice);
         return null;

@@ -23,7 +23,7 @@ The first window opens at (0,0), sized to the primary display (2560×1440 on a 2
 - turn presenter mode on or off
 - quit
 
-Closing every window does **not** quit the app. Use **Quit** from the tray. Typing `exit` in a shell closes that window. Launching the app a second time opens a new window in the instance that is already running. A new window starts with one **New pane** form (see Kubernetes pods below), where **Shell instead** gives you a shell.
+Closing every window does **not** quit the app. Use **Quit** from the tray. Typing `exit` in a shell closes that window. Launching the app a second time opens a new window in the instance that is already running. A new window starts with one **New pane** form (see Kubernetes pods below), where **Plan layout** shows the layout planner instead.
 
 ## Run as a service
 
@@ -141,7 +141,7 @@ The same images can run as **Kubernetes pods**, on the cluster that `kubectl` ta
 - **Namespace** picks where the pods are. It starts on the namespace the last new pod went to (`podNamespace` in the config), or `default`. **New namespace…** creates one.
 - **Open a pod** lists the pods the app made in that namespace; click one to show it, or its **✕** to delete it (a dialog asks first; the panes showing it close).
 - **New pod** makes one from any image in [linuxserver's catalog](https://www.linuxserver.io/our-images), with a tag (the catalog's, or any other) and the port its UI serves (3000 for the desktops and GUI apps; a server app's own port otherwise). Kubernetes pulls the image, so the first start of a desktop takes a few minutes.
-- **Shell instead** makes the pane a shell.
+- **Plan layout** makes the pane the layout planner.
 
 A new pod is the bare Pod `<image>-<tag>-<number>` (such as `webtop-latest-0`, or `webtop-ubuntu-kde-0` for the `ubuntu-kde` tag) in that namespace, labelled `app.kubernetes.io/managed-by=lan-terminal`, running as your user like the containers, with its home directory (`/config`) on an `emptyDir`: it lasts through restarts of the container and of the node, and goes when the pod is deleted. The pane reaches the UI through `kubectl port-forward` on a localhost port, and when the forward drops (the container restarting, say) it says so and connects again. Pods keep running when their pane closes, the menu's **Kubernetes pods** group lists them for any pane, and they are saved with the layout. The app deletes a pod only from the **New pane** form's **✕**; from a shell:
 

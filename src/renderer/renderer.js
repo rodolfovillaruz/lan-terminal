@@ -620,7 +620,7 @@ async function main() {
   };
 
   // A new pane's form: open one of the app's pods in a namespace, make a new pod from
-  // any linuxserver image, or start a shell. The namespace starts on the one the last
+  // any linuxserver image, or show the layout planner. The namespace starts on the one the last
   // new pod went to. Picking one turns the pane into it.
   const createLauncherPane = (id) => {
     const el = document.createElement('div');
@@ -646,7 +646,7 @@ async function main() {
         <p class="about"></p>
         <div class="row">
           <button type="submit">Create pod</button>
-          <button type="button" data-act="shell">Shell instead</button>
+          <button type="button" data-act="planner">Plan layout</button>
           <button type="button" data-act="refresh" title="List the namespaces and pods again">↻</button>
         </div>
         <p class="status"></p>
@@ -770,7 +770,7 @@ async function main() {
     form.elements.image.addEventListener('input', drawImage);
     form.addEventListener('click', async (e) => {
       const act = e.target.closest('button')?.dataset.act;
-      if (act === 'shell') launch('shell', 'Starting a shell…');
+      if (act === 'planner') launch('planner', 'Opening the layout planner…');
       if (act === 'refresh') load();
       if (act === 'cancel-namespace') {
         nsSelect.value = st?.namespace ?? '';
