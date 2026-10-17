@@ -226,6 +226,8 @@ html, body {
 .launcher .pods { list-style: none; margin: 0; padding: 0; }
 .launcher .pods li { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
 .launcher .pods li span, .launcher .pods li.none { opacity: 0.6; }
+.launcher .pods button.delete { margin-left: auto; padding: 2px 8px; }
+.launcher .pods button.delete:hover, .launcher .pods button.delete:focus-visible { border-color: #ff8a80; color: #ff8a80; }
 .launcher .about { opacity: 0.6; margin: 6px 0; max-height: 4.5em; overflow: hidden; }
 .launcher .about:empty { display: none; }
 .launcher .status { min-height: 1.2em; opacity: 0.75; }

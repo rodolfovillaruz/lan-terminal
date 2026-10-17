@@ -678,7 +678,13 @@ async function main() {
         b.addEventListener('click', () => launch(`pod:${p.namespace}:${p.name}`, `Opening ${p.namespace}/${p.name}…`));
         const what = document.createElement('span');
         what.textContent = `${p.app ? `${p.app}:${p.tag}` : 'unknown image'} · ${p.ready ? 'ready' : p.phase}`;
-        li.append(b, what);
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'delete';
+        del.textContent = '✕';
+        del.title = `Delete ${p.namespace}/${p.name}`;
+        del.addEventListener('click', () => deletePod(p));
+        li.append(b, what, del);
         return li;
       }));
       if (!pods.length) {
@@ -709,6 +715,18 @@ async function main() {
       drawPods();
       drawImage();
       say(st.errors.join(' · '), st.errors.length > 0);
+    };
+    const deletePod = async (p) => {
+      if (busy) return;
+      busy = true;
+      const label = `${p.namespace}/${p.name}`;
+      say(`Deleting ${label}…`);
+      const res = await window.terminal.deletePod(p.namespace, p.name);
+      busy = false;
+      if (res === false) return say('');
+      if (res !== true) return say(res, true);
+      await load();
+      say(`Deleted ${label}.`);
     };
     const launch = async (choice, message) => {
       if (busy) return;

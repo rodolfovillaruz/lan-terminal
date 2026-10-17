@@ -99,6 +99,14 @@ function create(bin, namespace, name, app, tag, port) {
   return kubectl(bin, ['create', '-f', '-'], { input: JSON.stringify(podSpec(namespace, name, app, tag, port)) });
 }
 
+// Deletes one of the app's pods, and waits for it to be gone. Pods it did not make are
+// left alone.
+async function remove(bin, namespace, name) {
+  if (!validName(namespace) || !validName(name)) throw new Error(`bad pod: ${namespace}/${name}`);
+  if (!(await pods(bin)).some((p) => p.namespace === namespace && p.name === name)) throw new Error(`${namespace}/${name} is not one of this app's pods`);
+  return kubectl(bin, ['delete', 'pod', name, '-n', namespace], { timeout: 120000 });
+}
+
 // Waits for the pod to be ready; pulling a desktop image the first time takes minutes.
 function waitReady(bin, namespace, name) {
   return kubectl(bin, ['wait', '--for=condition=Ready', `pod/${name}`, '-n', namespace, '--timeout=900s'], { timeout: 910000 });
@@ -139,4 +147,4 @@ async function catalog() {
   return images;
 }
 
-module.exports = { DEFAULT_PORT, validName, validPort, namespaces, createNamespace, pods, podSpec, freeName, create, waitReady, forward, catalog };
+module.exports = { DEFAULT_PORT, validName, validPort, namespaces, createNamespace, pods, podSpec, freeName, create, remove, waitReady, forward, catalog };

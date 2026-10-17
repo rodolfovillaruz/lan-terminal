@@ -137,11 +137,11 @@ Each running app holds from several hundred MB (one app) to a few GB (a desktop)
 The same images can run as **Kubernetes pods**, on the cluster that `kubectl` talks to. A new window's first pane, and a pane added in resize mode, start as a **New pane** form (the menu's **New pod…** turns any pane into one):
 
 - **Namespace** picks where the pods are. It starts on the namespace the last new pod went to (`podNamespace` in the config), or `default`. **New namespace…** creates one.
-- **Open a pod** lists the pods the app made in that namespace; click one to show it.
+- **Open a pod** lists the pods the app made in that namespace; click one to show it, or its **✕** to delete it (a dialog asks first; the panes showing it close).
 - **New pod** makes one from any image in [linuxserver's catalog](https://www.linuxserver.io/our-images), with a tag (the catalog's, or any other) and the port its UI serves (3000 for the desktops and GUI apps; a server app's own port otherwise). Kubernetes pulls the image, so the first start of a desktop takes a few minutes.
 - **Shell instead** makes the pane a shell.
 
-A new pod is the bare Pod `<image>-<number>` in that namespace, labelled `app.kubernetes.io/managed-by=lan-terminal`, running as your user like the containers, with its home directory (`/config`) on an `emptyDir`: it lasts through restarts of the container and of the node, and goes when the pod is deleted. The pane reaches the UI through `kubectl port-forward` on a localhost port, and when the forward drops (the container restarting, say) it says so and connects again. Pods keep running when their pane closes, the menu's **Kubernetes pods** group lists them for any pane, and they are saved with the layout. The app never deletes a pod; to delete one:
+A new pod is the bare Pod `<image>-<number>` in that namespace, labelled `app.kubernetes.io/managed-by=lan-terminal`, running as your user like the containers, with its home directory (`/config`) on an `emptyDir`: it lasts through restarts of the container and of the node, and goes when the pod is deleted. The pane reaches the UI through `kubectl port-forward` on a localhost port, and when the forward drops (the container restarting, say) it says so and connects again. Pods keep running when their pane closes, the menu's **Kubernetes pods** group lists them for any pane, and they are saved with the layout. The app deletes a pod only from the **New pane** form's **✕**; from a shell:
 
 ```sh
 kubectl delete pod -n <namespace> <name>

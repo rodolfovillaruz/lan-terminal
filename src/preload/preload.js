@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('terminal', {
   launcherState: () => ipcRenderer.invoke('launcher:state'),
   createNamespace: (name) => ipcRenderer.invoke('launcher:namespace', name),
   launch: (paneId, choice) => ipcRenderer.invoke('launcher:open', paneId, choice),
+  // Asks first; false when cancelled, true when deleted, or an error message.
+  deletePod: (namespace, pod) => ipcRenderer.invoke('launcher:delete-pod', namespace, pod),
   copy: (text) => ipcRenderer.send('clipboard:write', text),
   paste: () => ipcRenderer.invoke('clipboard:read'),
   // Android device panes: the video stream in, touch and key events out.

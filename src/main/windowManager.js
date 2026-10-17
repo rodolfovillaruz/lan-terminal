@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, ipcMain, screen, session } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, screen, session } = require('electron');
 const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
@@ -334,6 +334,28 @@ class WindowManager extends EventEmitter {
       try {
         await this.createNamespace(name);
         return null;
+      } catch (err) {
+        return err.message;
+      }
+    });
+    // Deleting a pod from the form, once the dialog over the window says yes. Answers
+    // false when cancelled, true when deleted, or what went wrong.
+    ipcMain.handle('launcher:delete-pod', async (event, namespace, pod) => {
+      const term = this.#fromSender(event);
+      if (!term || !kube.validName(namespace) || !kube.validName(pod)) return 'unknown pod';
+      const { response } = await dialog.showMessageBox(term.win, {
+        type: 'warning',
+        title: 'Delete pod',
+        message: `Delete the pod ${namespace}/${pod}?`,
+        detail: 'Its home directory (/config) goes with it, and the panes showing it close.',
+        buttons: ['Cancel', 'Delete'],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      if (response !== 1) return false;
+      try {
+        await this.deletePod(namespace, pod);
+        return true;
       } catch (err) {
         return err.message;
       }
@@ -1151,6 +1173,20 @@ class WindowManager extends EventEmitter {
   async createNamespace(name) {
     if (!this.kubectl) throw new Error('kubectl is not installed');
     await kube.createNamespace(this.kubectl, name);
+  }
+
+  // Deletes one of the app's pods and removes the panes that showed it.
+  async deletePod(namespace, pod) {
+    if (!this.kubectl) throw new Error('kubectl is not installed');
+    await kube.remove(this.kubectl, namespace, pod);
+    for (const term of [...this.terminals.values()]) {
+      for (const pane of [...term.panes.values()]) {
+        if (pane.pod !== pod || pane.namespace !== namespace) continue;
+        this.#endPane(pane);
+        this.#removePane(term, pane.id);
+      }
+    }
+    await this.refreshSessions();
   }
 
   // Stops an app's container and removes the panes that showed it.
