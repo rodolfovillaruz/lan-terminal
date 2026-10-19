@@ -75,9 +75,9 @@ html, body {
 #apps iframe { width: 100%; height: 100%; border: 0; display: block; }
 #apps webview { width: 100%; height: 100%; display: flex; }
 #apps video { width: 100%; height: 100%; object-fit: contain; display: block; }
-/* A camera spanning its pane's width: centred, with its top and bottom cropped. */
+/* A camera's video is placed and turned by the window (see createCameraPane). */
 #apps .app.camera { overflow: hidden; }
-#apps .app.camera.fill-width video { position: absolute; left: 0; top: 50%; height: auto; transform: translateY(-50%); }
+#apps .app.camera video { position: absolute; }
 #apps .app.page p, #apps .app.camera p {
   position: absolute;
   inset: 0;

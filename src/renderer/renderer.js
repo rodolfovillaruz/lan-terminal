@@ -179,8 +179,10 @@ async function main() {
   // found by its name. A camera that is not there, or that cannot be opened or stops,
   // says so and is tried again every few seconds. A loopback device opens even when
   // nothing feeds it, and then sends no frames, so the pane also says when none have
-  // come for a while, and clears that once they do. With fillWidth the video spans the
-  // pane's width and its top and bottom are cropped, instead of showing whole.
+  // come for a while, and clears that once they do. The video shows whole. With lockRatio
+  // the pane keeps the video's shape: when its width changes its height follows, and
+  // when its height changes its width follows. rotate turns the video
+  // clockwise by 0, 90, 180 or 270 degrees.
   const createCameraPane = (id, info) => {
     const { el, box, place } = layerSlot();
     box.classList.add('camera');
@@ -239,20 +241,86 @@ async function main() {
     status.textContent = `Opening ${info.label}…`;
     connect();
 
-    const update = (next) => box.classList.toggle('fill-width', Boolean(next.fillWidth));
+    // The video's box before it is turned: a quarter turn swaps its width and height,
+    // so it is laid out across the pane's height and turned about its centre.
+    let lockRatio = false;
+    let rotate = 0;
+    let locking = 0; // a frame that fits the pane to the video, while one is waiting
+    let size = null; // the pane's size when last arranged, to tell which side changed
+    // The side the last fit changed, { dim }, until its result comes, and how many
+    // fits in a row have answered one another's results rather than a change by hand.
+    let fitted = null;
+    let chained = 0;
+    let widthFollows = false; // the height alone changed last, so the width follows it
+    const SLACK = 2; // px off the video's shape that a locked pane may be, from rounding
+    const turned = () => rotate % 180 !== 0;
+    // The video's height over its width, as shown (turned).
+    const aspect = () => (video.videoWidth ? (turned() ? video.videoWidth / video.videoHeight : video.videoHeight / video.videoWidth) : null);
+    const arrange = () => {
+      const w = box.clientWidth;
+      const h = box.clientHeight;
+      const width = turned() ? h : w;
+      const height = turned() ? w : h;
+      Object.assign(video.style, {
+        width: `${width}px`,
+        height: `${height}px`,
+        left: `${(w - width) / 2}px`,
+        top: `${(h - height) / 2}px`,
+        transform: rotate ? `rotate(${rotate}deg)` : '',
+      });
+      // A locked ratio, once the video has come: the side that did not change follows
+      // the one that did. When the height alone changed, the width follows; otherwise
+      // (the width changed, or both, or the lock or the video is new) the height does,
+      // or the width when nothing stacks the pane. A fit that falls short (the split
+      // has no more room) leaves the other side to catch up, once; past that, fits
+      // that answer fits would chase each other's rounding without end.
+      if (!el.clientWidth || !el.clientHeight) return;
+      const was = size;
+      size = { width: el.clientWidth, height: el.clientHeight };
+      if (was && (was.width !== size.width || was.height !== size.height)) {
+        // A fit's result changes only the side it fitted.
+        const other = fitted?.dim === 'height' ? 'width' : 'height';
+        chained = fitted && was[other] === size[other] ? chained + 1 : 0;
+        fitted = null;
+        widthFollows = was.width === size.width;
+      }
+      const a = aspect();
+      if (!lockRatio || !a || locking || chained > 1 || Math.abs(size.width * a - size.height) <= SLACK) return;
+      locking = requestAnimationFrame(() => {
+        locking = 0;
+        const r = aspect();
+        if (!lockRatio || !r) return;
+        const fit = (dim, length) => fitSize(id, dim, length) && (fitted = { dim });
+        const byHeight = () => fit('height', el.clientWidth * r);
+        const byWidth = () => fit('width', el.clientHeight / r);
+        if (widthFollows) byWidth() || byHeight();
+        else byHeight() || byWidth();
+      });
+    };
+    new ResizeObserver(arrange).observe(box);
+    video.addEventListener('resize', arrange); // the video's size, once it comes or changes
+    const update = (next) => {
+      if (Boolean(next.lockRatio) !== lockRatio) {
+        chained = 0;
+        widthFollows = false;
+      }
+      lockRatio = Boolean(next.lockRatio);
+      if ((next.rotate ?? 0) !== rotate) chained = 0;
+      rotate = next.rotate ?? 0;
+      arrange();
+    };
     update(info);
 
     const p = {
       el,
       update,
-      // The pane's height that shows the whole video at the pane's width, once it has come.
-      videoHeight: () => (video.videoWidth ? (el.clientWidth * video.videoHeight) / video.videoWidth : null),
       syncSize: place,
       focus: () => {},
       dispose: () => {
         disposed = true;
         clearTimeout(retry);
         clearInterval(watch);
+        cancelAnimationFrame(locking);
         stop();
         box.remove();
       },
@@ -1204,41 +1272,42 @@ async function main() {
     return box;
   };
 
-  // Makes a pane height pixels tall by resizing the nearest stacking split above it, the
-  // others in that split sharing what is left. Only side-by-side splits come between
-  // the two, so the pane grows as much as the split's child that holds it.
+  // Makes a pane size pixels tall (dim 'height') or wide (dim 'width') by resizing the
+  // nearest split above it that stacks (for its height) or lays panes side by side (for
+  // its width), the others in that split sharing what is left. Only splits the other
+  // way come between the two, so the pane grows as much as the split's child that
+  // holds it. Says whether there was such a split to resize.
   let drawn = null; // the layout last drawn
-  const fitHeight = (id, height) => {
+  const fitSize = (id, dim, size) => {
     const p = panes.get(id);
-    if (!drawn || !p?.el.isConnected || root.classList.contains('maximized')) return;
-    // The path to the nearest 'col' split holding the pane, and the child it is in.
+    if (!drawn || !p?.el.isConnected || root.classList.contains('maximized')) return false;
+    const dir = dim === 'height' ? 'col' : 'row';
+    // The path to the nearest such split holding the pane, and the child it is in.
     const find = (node, path) => {
       if (node.type === 'pane') return node.id === id ? { split: null } : null;
       for (const [i, child] of node.children.entries()) {
         const found = find(child, [...path, i]);
         if (!found) continue;
-        return found.split || node.dir !== 'col' ? found : { split: path, index: i };
+        return found.split || node.dir !== dir ? found : { split: path, index: i };
       }
       return null;
     };
     const found = find(drawn, []);
-    if (!found?.split) return;
+    if (!found?.split) return false;
     // The split's box, and its children as drawn.
     let child = p.el;
-    while (child.parentElement && !child.parentElement.classList.contains('col')) child = child.parentElement;
+    while (child.parentElement && !child.parentElement.classList.contains(dir)) child = child.parentElement;
     const items = [...child.parentElement.children];
-    if (items.indexOf(child) !== found.index) return;
-    const heights = items.map((c) => c.getBoundingClientRect().height);
-    const total = heights.reduce((a, h) => a + h, 0);
-    const rest = total - heights[found.index];
-    const want = Math.min(total, Math.max(0, heights[found.index] + height - p.el.clientHeight));
-    const sizes = heights.map((h, i) => (i === found.index ? want : rest > 0 ? (h * (total - want)) / rest : 0) / total);
+    if (items.indexOf(child) !== found.index) return false;
+    const lengths = items.map((c) => c.getBoundingClientRect()[dim]);
+    const total = lengths.reduce((a, l) => a + l, 0);
+    const rest = total - lengths[found.index];
+    const now = dim === 'height' ? p.el.clientHeight : p.el.clientWidth;
+    const want = Math.min(total, Math.max(0, lengths[found.index] + size - now));
+    const sizes = lengths.map((l, i) => (i === found.index ? want : rest > 0 ? (l * (total - want)) / rest : 0) / total);
     window.terminal.resizeSplit(found.split, sizes);
+    return true;
   };
-  window.terminal.onCameraFitHeight((id) => {
-    const height = panes.get(id)?.videoHeight?.();
-    if (height) fitHeight(id, height);
-  });
 
   window.terminal.onData((id, data) => panes.get(id)?.term?.write(data));
   window.terminal.onScrcpySession((id, video) => panes.get(id)?.session?.(video));

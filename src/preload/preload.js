@@ -10,8 +10,7 @@ contextBridge.exposeInMainWorld('terminal', {
   // Web page panes: where the page went, and reloads asked for from the planner.
   pageState: (paneId, url, title) => ipcRenderer.send('page:state', paneId, url, title),
   onPageReload: (cb) => ipcRenderer.on('page:reload', (_e, paneId) => cb(paneId)),
-  // Camera panes: fitting a pane's height to its video resizes the split above it.
-  onCameraFitHeight: (cb) => ipcRenderer.on('camera:fit-height', (_e, paneId) => cb(paneId)),
+  // Camera panes: keeping a pane's shape to its video's resizes the split above it.
   resizeSplit: (splitPath, sizes) => ipcRenderer.send('pane:resize-split', splitPath, sizes),
   // A new pane's form: what it offers, a new namespace, creating a pod (the form stays),
   // and opening a pod or the planner ('pod:<ns>:<name>', 'pod:new:<json>' or 'planner').

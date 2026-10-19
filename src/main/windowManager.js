@@ -37,35 +37,42 @@ const validPage = (url) => {
 // The planner, in its own window or in a pane (a webview in the planner partition).
 const PLANNER_PAGE = path.join(__dirname, '..', 'planner', 'planner.html');
 const PLANNER_URL = pathToFileURL(PLANNER_PAGE).href;
-const PLANNER_PANE_URL = `${PLANNER_URL}?pane`; // tells the page it is in a pane
+// Tells the page it is in a pane, and which one: ?pane=<pane id>.
+const PLANNER_PANE_URL = `${PLANNER_URL}?pane`;
+const PLANNER_PANE_SRC = new RegExp(`^${PLANNER_PANE_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}=[0-9a-f-]{36}$`);
 const PLANNER_PRELOAD = path.join(__dirname, '..', 'preload', 'planner-preload.js');
 const PLANNER_PARTITION = 'planner';
 
 // DroidCam's kernel module, which makes the V4L2 loopback device its client feeds the
 // phone's camera into. The window finds the device by its name, "Droidcam".
 const DROIDCAM_MODULE = '/sys/module/v4l2loopback_dc';
+// How far a camera's video may be turned, clockwise, in degrees.
+const validRotation = (r) => [0, 90, 180, 270].includes(r);
 
 // What a pane shows, as a source: null for a shell, { mux, name } for a multiplexer
 // session, { app, instance, tag } for a linuxserver app (e.g. chromium 0), { device,
 // display } for an Android device (its adb serial): its screen, or with display a
 // new virtual display on it (see scrcpy.validDisplay), { page } for a web page
-// (its URL), { planner: true } for the layout planner, { droidcam: true, fillWidth }
-// for DroidCam's camera (fillWidth: its video spans the pane's width, see
-// setCameraFillWidth), or { container: name } for a container labelled
+// (its URL), { planner: true } for the layout planner, { droidcam: true, lockRatio,
+// rotate } for DroidCam's camera (lockRatio: the pane keeps the video's shape, see
+// setCameraLockRatio; rotate: its video turned clockwise by 0, 90, 180 or 270
+// degrees, see setCameraRotation), or { container: name } for a container labelled
 // lan-terminal.pane=<name> (see linuxserver.js), { pod, namespace } for a Kubernetes
 // pod the app runs (see kube.js), or { launcher: true } for the form that opens one
 // or the layout planner in a new pane. A saved pane shape stores it as its leaf: 'pane', { <mux>: name } (e.g.
 // { tmux: 'work' }), { linuxserver: app, name, tag }, { scrcpy: serial, display,
 // startApp }, where startApp is the app last opened on a new display, which opens
 // again when the display comes back, { page: url }, the page it was last on,
-// { planner: true }, { droidcam: true, fillWidth }, { container: name },
+// { planner: true }, { droidcam: true, lockRatio, rotate }, { container: name },
 // { pod, namespace } or { launcher: true }.
 // { webtop: name, tag } is the older form for a webtop.
 const leafSource = (s) => {
   if (s?.planner === true) return { planner: true };
   if (s?.launcher === true) return { launcher: true };
   if (kube.validName(s?.pod) && kube.validName(s?.namespace)) return { pod: s.pod, namespace: s.namespace };
-  if (s?.droidcam === true) return { droidcam: true, fillWidth: s.fillWidth === true };
+  if (s?.droidcam === true) {
+    return { droidcam: true, lockRatio: s.lockRatio === true, rotate: validRotation(s.rotate) ? s.rotate : 0 };
+  }
   if (ls.validName(s?.container)) return { container: s.container };
   if (validPage(s?.page)) return { page: s.page };
   if (scrcpy.validSerial(s?.scrcpy)) {
@@ -80,7 +87,7 @@ const leafSource = (s) => {
 };
 const isLeaf = (s) => s === 'pane' || leafSource(s) !== null;
 const paneLeaf = (p) =>
-  p.planner ? { planner: true } : p.launcher ? { launcher: true } : p.pod ? { pod: p.pod, namespace: p.namespace } : p.droidcam ? { droidcam: true, ...(p.fillWidth && { fillWidth: true }) } : p.container ? { container: p.container } : p.page ? { page: p.page } : p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
+  p.planner ? { planner: true } : p.launcher ? { launcher: true } : p.pod ? { pod: p.pod, namespace: p.namespace } : p.droidcam ? { droidcam: true, ...(p.lockRatio && { lockRatio: true }), ...(p.rotate && { rotate: p.rotate }) } : p.container ? { container: p.container } : p.page ? { page: p.page } : p.device ? { scrcpy: p.device, ...(p.display !== null && { display: p.display }), ...(p.startApp && { startApp: p.startApp }) } : p.app ? { linuxserver: p.app, name: p.instance, tag: p.tag } : p.session ? { [p.mux]: p.session } : 'pane';
 const sameSource = (p, source) =>
   Boolean(p.planner) === Boolean(source?.planner) && Boolean(p.droidcam) === Boolean(source?.droidcam) &&
   Boolean(p.launcher) === Boolean(source?.launcher) && (p.pod ?? null) === (source?.pod ?? null) && (p.namespace ?? null) === (source?.namespace ?? null) &&
@@ -117,8 +124,8 @@ class WindowManager extends EventEmitter {
     //   kind 'page': { page } shows a web page in a webview; page is the URL it is on,
     //     which follows its links, so the saved layout reopens where it was.
     //   kind 'planner': { planner: true } shows the layout planner in a webview.
-    //   kind 'camera': { droidcam: true } shows DroidCam's V4L2 loopback device, which
-    //     the window opens as a camera.
+    //   kind 'camera': { droidcam: true, lockRatio, rotate } shows DroidCam's V4L2
+    //     loopback device, which the window opens as a camera.
     this.terminals = new Map();
     this.saveTimer = null;
     this.planner = null; // the layout planner window, while open
@@ -519,8 +526,8 @@ class WindowManager extends EventEmitter {
     plannerAction('planner:source', (id, paneId, source) => this.setPaneSource(id, paneId, source));
     plannerAction('planner:add-pane', (id, source) => this.addPane(id, source));
     plannerAction('planner:stop-app', (app, instance) => this.stopApp(app, instance));
-    plannerAction('planner:camera-fill-width', (id, paneId, on) => this.setCameraFillWidth(id, paneId, on));
-    plannerAction('planner:camera-fit-height', (id, paneId) => this.fitCameraHeight(id, paneId));
+    plannerAction('planner:camera-rotate', (id, paneId, rotate) => this.setCameraRotation(id, paneId, rotate));
+    plannerAction('planner:camera-lock-ratio', (id, paneId, on) => this.setCameraLockRatio(id, paneId, on));
     plannerAction('planner:reload-page', (id, paneId) => this.reloadPage(id, paneId));
     plannerAction('planner:open-app', (id, paneId, pkg) => this.openDeviceApp(id, paneId, pkg));
     plannerAction('planner:shown-apps', (serial, packages) => this.setShownApps(serial, packages));
@@ -533,6 +540,13 @@ class WindowManager extends EventEmitter {
       });
     });
     plannerAction('planner:new-window', () => this.create());
+    // A planner in a pane turns its own pane into a New pane form.
+    ipcMain.on('planner:home-pane', (event, paneId) => {
+      if (!this.panePlanners.has(event.sender)) return;
+      const host = event.sender.hostWebContents;
+      const term = [...this.terminals.values()].find((t) => !t.win.isDestroyed() && t.win.webContents === host);
+      if (term?.panes.get(paneId)?.kind === 'planner') this.homePane(term.id, paneId);
+    });
     plannerAction('planner:close-window', (id) => this.terminals.size > 1 && this.close(id));
     plannerAction('planner:lock-window', (id, locked) => this.setLocked(id, locked));
     plannerAction('planner:focus-window', (id) => this.focus(id));
@@ -586,7 +600,7 @@ class WindowManager extends EventEmitter {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
       const deviceApp = p.foreground ? { package: p.foreground, name: this.#appName(p.device, p.foreground) } : null;
-      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, container: p.container ?? null, pod: p.pod ?? null, namespace: p.namespace ?? null, launcher: Boolean(p.launcher), page: p.page ?? null, planner: Boolean(p.planner), droidcam: Boolean(p.droidcam), fillWidth: Boolean(p.fillWidth), device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, deviceApp, model: p.model ?? null, pid: p.pty?.pid ?? null };
+      return { id, title: p.title, process: p.process, mux: p.mux, session: p.session, app: p.app, instance: p.instance, container: p.container ?? null, pod: p.pod ?? null, namespace: p.namespace ?? null, launcher: Boolean(p.launcher), page: p.page ?? null, planner: Boolean(p.planner), droidcam: Boolean(p.droidcam), lockRatio: Boolean(p.lockRatio), rotate: p.rotate ?? 0, device: p.device ?? null, display: p.display ?? null, startApp: p.startApp ?? null, deviceApp, model: p.model ?? null, pid: p.pty?.pid ?? null };
     });
   }
 
@@ -788,9 +802,9 @@ class WindowManager extends EventEmitter {
       if (p.kind === 'web') panes[p.id] = { kind: 'web', url: p.url, error: p.error, label: p.pod ? `${p.namespace}/${p.pod}` : p.container ?? `${p.app} ${p.instance} (${p.tag})` };
       if (p.kind === 'launcher') panes[p.id] = { kind: 'launcher' };
       if (p.kind === 'page') panes[p.id] = { kind: 'page', url: p.page };
-      if (p.kind === 'planner') panes[p.id] = { kind: 'planner', url: PLANNER_PANE_URL };
-      // Spanning the width only applies beside other panes; alone, it shows it all.
-      if (p.kind === 'camera') panes[p.id] = { kind: 'camera', name: 'Droidcam', label: 'DroidCam', fillWidth: p.fillWidth && layout.leaves(term.layout).length > 1 };
+      if (p.kind === 'planner') panes[p.id] = { kind: 'planner', url: `${PLANNER_PANE_URL}=${p.id}` };
+      // Keeping the pane's shape only applies beside other panes; alone, it fills the window.
+      if (p.kind === 'camera') panes[p.id] = { kind: 'camera', name: 'Droidcam', label: 'DroidCam', lockRatio: p.lockRatio && layout.leaves(term.layout).length > 1, rotate: p.rotate };
       if (p.kind === 'scrcpy') panes[p.id] = { kind: 'scrcpy', status: p.status, fit: scrcpy.isFit(p.display), captureMouse: p.mirror?.capturesMouse ?? false };
     }
     term.win.webContents.send('layout', { layout: term.layout, active: term.activePane, maximized: term.maximized, pinned: [...term.pinned], panes });
@@ -990,7 +1004,7 @@ class WindowManager extends EventEmitter {
   // DroidCam client, not the app, feeds the phone's camera into it.
   #spawnCameraPane(term, source) {
     const id = crypto.randomUUID();
-    term.panes.set(id, { id, kind: 'camera', droidcam: true, fillWidth: Boolean(source.fillWidth), mux: null, session: null, app: null, instance: null, title: 'DroidCam', process: 'droidcam', exited: false });
+    term.panes.set(id, { id, kind: 'camera', droidcam: true, lockRatio: Boolean(source.lockRatio), rotate: validRotation(source.rotate) ? source.rotate : 0, mux: null, session: null, app: null, instance: null, title: 'DroidCam', process: 'droidcam', exited: false });
     return id;
   }
 
@@ -1069,23 +1083,27 @@ class WindowManager extends EventEmitter {
     return true;
   }
 
-  // A camera pane's video spans the pane's width, its top and bottom cropped to the
-  // pane's height, rather than showing whole inside it. Only with other panes beside it.
-  setCameraFillWidth(id, paneId, on) {
+  // Turns a camera pane's video clockwise by rotate degrees (0, 90, 180 or 270), e.g.
+  // for a phone held on its side.
+  setCameraRotation(id, paneId, rotate) {
     const term = this.get(id);
     const pane = term?.panes.get(paneId);
-    if (pane?.kind !== 'camera') return false;
-    pane.fillWidth = Boolean(on);
+    if (pane?.kind !== 'camera' || !validRotation(rotate)) return false;
+    pane.rotate = rotate;
     this.#pushLayout(term);
     return true;
   }
 
-  // Asks the window to make a camera pane as tall as its video is at the pane's width,
-  // by resizing the split above it; the window knows the video's size and the pane's.
-  fitCameraHeight(id, paneId) {
+  // Locks a camera pane's shape to its video's: when the pane's width changes the
+  // window makes its height follow, and when its height changes its width, by resizing
+  // the splits above it, since it knows the video's size and the pane's. Only with
+  // other panes beside it.
+  setCameraLockRatio(id, paneId, on) {
     const term = this.get(id);
-    if (term?.panes.get(paneId)?.kind !== 'camera' || term.win.isDestroyed()) return false;
-    term.win.webContents.send('camera:fit-height', paneId);
+    const pane = term?.panes.get(paneId);
+    if (pane?.kind !== 'camera') return false;
+    pane.lockRatio = Boolean(on);
+    this.#pushLayout(term);
     return true;
   }
 
@@ -1432,7 +1450,7 @@ class WindowManager extends EventEmitter {
     win.webContents.on('will-attach-webview', (event, prefs, params) => {
       delete prefs.preload;
       Object.assign(prefs, { nodeIntegration: false, nodeIntegrationInSubFrames: false, contextIsolation: true, sandbox: true });
-      if (params.src === PLANNER_PANE_URL && params.partition === PLANNER_PARTITION) prefs.preload = PLANNER_PRELOAD;
+      if (PLANNER_PANE_SRC.test(params.src) && params.partition === PLANNER_PARTITION) prefs.preload = PLANNER_PRELOAD;
       else if (!validPage(params.src) || params.partition !== 'persist:pages') event.preventDefault();
     });
     win.webContents.on('did-attach-webview', (_event, guest) => {

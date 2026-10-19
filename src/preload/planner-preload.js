@@ -19,15 +19,18 @@ contextBridge.exposeInMainWorld('planner', {
   addPane: (windowId, source) => ipcRenderer.send('planner:add-pane', windowId, source),
   stopApp: (app, instance) => ipcRenderer.send('planner:stop-app', app, instance),
   reloadPage: (windowId, paneId) => ipcRenderer.send('planner:reload-page', windowId, paneId),
-  // A camera pane: its video spanning the pane's width, and its height fitted to the video.
-  cameraFillWidth: (windowId, paneId, on) => ipcRenderer.send('planner:camera-fill-width', windowId, paneId, on),
-  cameraFitHeight: (windowId, paneId) => ipcRenderer.send('planner:camera-fit-height', windowId, paneId),
+  // A camera pane: its video turned clockwise by rotate degrees (0, 90, 180 or 270),
+  // and the pane's shape locked to the video's.
+  cameraRotate: (windowId, paneId, rotate) => ipcRenderer.send('planner:camera-rotate', windowId, paneId, rotate),
+  cameraLockRatio: (windowId, paneId, on) => ipcRenderer.send('planner:camera-lock-ratio', windowId, paneId, on),
   // An Android device's apps ([{ name, package, system }]), and opening one in a device pane.
   deviceApps: (serial) => ipcRenderer.invoke('planner:device-apps', serial),
   openApp: (windowId, paneId, pkg) => ipcRenderer.send('planner:open-app', windowId, paneId, pkg),
   // The packages a device's Open app… offers ([] for all of them).
   setShownApps: (serial, packages) => ipcRenderer.send('planner:shown-apps', serial, packages),
   newWindow: () => ipcRenderer.send('planner:new-window'),
+  // A planner in a pane: put a New pane form in its pane instead.
+  homePane: (paneId) => ipcRenderer.send('planner:home-pane', paneId),
   lockWindow: (windowId, locked) => ipcRenderer.send('planner:lock-window', windowId, locked),
   closeWindow: (windowId) => ipcRenderer.send('planner:close-window', windowId),
   focusWindow: (windowId) => ipcRenderer.send('planner:focus-window', windowId),

@@ -13,12 +13,16 @@ let picking = false; // the dialog that chooses the apps Open app… offers is o
 let pending = null; // state that arrived during a drag or a menu choice, drawn after it
 
 // Shown in a capture window's pane (see the planner pane in windowManager.js) rather
-// than in its own window.
-const IN_PANE = new URLSearchParams(location.search).has('pane');
+// than in its own window; ?pane=<pane id> says which.
+const PANE_ID = new URLSearchParams(location.search).get('pane');
+const IN_PANE = PANE_ID !== null;
 
 const EDGE = 0.25; // share of a pane's width or height that counts as its edge
 
 document.getElementById('new-window').addEventListener('click', () => window.planner.newWindow());
+const homePaneButton = document.getElementById('home-pane');
+homePaneButton.hidden = !PANE_ID;
+homePaneButton.addEventListener('click', () => window.planner.homePane(PANE_ID));
 const chooseAppsButton = document.getElementById('choose-apps');
 chooseAppsButton.addEventListener('click', () => chooseApps());
 
@@ -688,10 +692,11 @@ function chooseApps() {
   show(phone.value);
 }
 
-// A pane stacked above or below another, so its height can change.
-function inStack(node, id, stacked = false) {
-  if (node.type === 'pane') return stacked && node.id === id;
-  return node.children.some((c) => inStack(c, id, stacked || node.dir === 'col'));
+// A pane in a split of the given way ('col': stacked above or below another, so its
+// height can change; 'row': beside another, so its width can).
+function inSplit(node, id, dir, held = false) {
+  if (node.type === 'pane') return held && node.id === id;
+  return node.children.some((c) => inSplit(c, id, dir, held || node.dir === dir));
 }
 
 function paneBox(win, id) {
@@ -725,22 +730,30 @@ function paneBox(win, id) {
   max.setAttribute('aria-pressed', String(maxed));
   max.disabled = win.panes.length === 1 && !maxed;
   if (info.page) button(tools, '↻', 'Reload the page', () => window.planner.reloadPage(win.id, id));
-  // A camera beside other panes: its video spanning the pane's width, and the pane's
-  // height fitted to the video, so the width set by hand shows the whole picture.
+  // A camera's video turned a quarter left or right, e.g. for a phone held on its side.
+  if (info.droidcam) {
+    const turned = info.rotate ? ` (now turned ${info.rotate}° clockwise)` : '';
+    button(tools, '⟲', `Rotate the video left${turned}`, () => window.planner.cameraRotate(win.id, id, (info.rotate + 270) % 360));
+    button(tools, '⟳', `Rotate the video right${turned}`, () => window.planner.cameraRotate(win.id, id, (info.rotate + 90) % 360));
+  }
+  // A camera beside other panes: the pane's shape locked to the video's, so the size
+  // set by hand shows the whole picture.
   if (info.droidcam && win.panes.length > 1) {
-    const fill = button(
+    const lock = button(
       tools,
-      '⇔',
-      info.fillWidth
-        ? 'The video spans the pane\'s width, its top and bottom cropped. Click to show it whole.'
-        : 'Span the video across the pane\'s width, cropping its top and bottom',
-      () => window.planner.cameraFillWidth(win.id, id, !info.fillWidth),
+      info.lockRatio ? '🔒' : '🔓',
+      info.lockRatio
+        ? "The pane's ratio is locked to the video's: changing its width changes its height, and the other way round. Click to unlock."
+        : "Lock the pane's ratio to the video's: changing its width changes its height, and the other way round",
+      () => window.planner.cameraLockRatio(win.id, id, !info.lockRatio),
       'toggle',
     );
-    fill.setAttribute('aria-pressed', String(info.fillWidth));
-    const fit = button(tools, '↕', "Fit the pane's height to the video at the pane's width", () => window.planner.cameraFitHeight(win.id, id));
-    fit.disabled = Boolean(win.maximized) || !inStack(win.layout, id);
-    if (fit.disabled) fit.title = win.maximized ? 'Put the panes back to fit the height' : 'Split the window down to give this pane a height to fit';
+    lock.setAttribute('aria-pressed', String(info.lockRatio));
+    // Unlocking stays possible; locking needs a split to resize, either way.
+    if (!info.lockRatio && !inSplit(win.layout, id, 'col') && !inSplit(win.layout, id, 'row')) {
+      lock.disabled = true;
+      lock.title = 'Split the window to give this pane a size to lock';
+    }
   }
   if (info.app) {
     const name = paneName(info);
