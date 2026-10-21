@@ -582,6 +582,13 @@ class WindowManager extends EventEmitter {
     return { x: 0, y: 0, width: this.config.width || dw, height: this.config.height || dh };
   }
 
+  // Maximized: the work area beside KDE's panel, no bigger than the configured size.
+  #maximizedBounds() {
+    const { x, y, width, height } = screen.getPrimaryDisplay().workArea;
+    const full = this.#fullBounds();
+    return { x, y, width: Math.min(width, full.width), height: Math.min(height, full.height) };
+  }
+
   #paneList(term) {
     return layout.leaves(term.layout).map((id) => {
       const p = term.panes.get(id);
@@ -1376,8 +1383,8 @@ class WindowManager extends EventEmitter {
   }
 
   // In any pane, Ctrl+Shift+Alt+Z maximizes the active pane or puts it back,
-  // Ctrl+Shift+Alt+Q puts a New pane form in its place, Ctrl+Shift+Alt+F turns
-  // always on top on or off, and Ctrl+Shift+Alt+R resize mode.
+  // Ctrl+Shift+Alt+Q puts a New pane form in its place, Ctrl+Shift+Alt+F switches
+  // between fullscreen and maximized, and Ctrl+Shift+Alt+R resize mode.
   #windowKey(term, input) {
     if (input.type !== 'keyDown' || input.isAutoRepeat) return false;
     if (!(input.control && input.shift && input.alt && !input.meta)) return false;
@@ -1399,7 +1406,7 @@ class WindowManager extends EventEmitter {
   // empty). Without either the window starts with one New pane form.
   create({ layout: saved, empty = false, locked = false } = {}) {
     const id = crypto.randomUUID();
-    const bounds = this.#fullBounds();
+    const bounds = this.#maximizedBounds();
 
     const win = new BrowserWindow({
       ...bounds,
@@ -1518,8 +1525,8 @@ class WindowManager extends EventEmitter {
       this.#saveSoon();
     });
     win.once('ready-to-show', () => win.show());
-    // KWin shrinks a new window to the work area (above the panel) when it is mapped.
-    // A resize after mapping is not clamped, so restore the full size once it is shown.
+    // A new window starts maximized; KWin also shrinks it to the work area when it is
+    // mapped, so set the size again once it is shown.
     win.once('show', () => win.setBounds(bounds));
 
     win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
@@ -1698,13 +1705,18 @@ class WindowManager extends EventEmitter {
     return true;
   }
 
-  // Keep-above puts the window over KDE's panel; skip-taskbar drops its taskbar and Alt+Tab entry.
+  // Fullscreen (always on top) fills the whole display: keep-above puts the window over
+  // KDE's panel, and skip-taskbar drops its taskbar and Alt+Tab entry. Off, the window
+  // is maximized: a normal window filling the work area beside the panel. Either way it
+  // goes back to the top left, wherever move mode had put it.
   setAlwaysOnTop(id, enabled) {
     const term = this.get(id);
     if (!term) return false;
     term.alwaysOnTop = Boolean(enabled);
     term.win.setAlwaysOnTop(term.alwaysOnTop);
     term.win.setSkipTaskbar(term.alwaysOnTop);
+    // A resize is not clamped to the work area once the window is mapped.
+    term.win.setBounds(term.alwaysOnTop ? this.#fullBounds() : this.#maximizedBounds());
     if (term.alwaysOnTop) this.focus(id);
     this.#changed();
     return true;
