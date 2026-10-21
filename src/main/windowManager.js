@@ -1029,7 +1029,7 @@ class WindowManager extends EventEmitter {
       if (!this.kubectl) return show(null, 'kubectl is not installed');
       try {
         if (newPod) {
-          await kube.create(this.kubectl, namespace, pod, newPod.repo, newPod.tag, newPod.port, newPod.mounts);
+          await kube.create(this.kubectl, namespace, pod, newPod.repo, newPod.tag, newPod.port, newPod.mounts, newPod.gpu);
           newPod = null;
           this.refreshSessions();
         }
@@ -1215,8 +1215,8 @@ class WindowManager extends EventEmitter {
   }
 
   // 'pod:<namespace>:<name>' opens a pod; 'pod:new:<json>' makes one from { namespace,
-  // repo, tag, port, mounts } (port the browser port, or null for none; mounts:
-  // [{ host, path, chown }], each host one of hostDirs),
+  // repo, tag, port, mounts, gpu } (port the browser port, or null for none; mounts:
+  // [{ host, path, chown }], each host one of hostDirs; gpu true for the node's GPUs),
   // named <app>-<tag>-<n> with the smallest n free in the namespace, and makes the
   // namespace the one the next new pod form starts on.
   async #resolvePod(spec) {
@@ -1233,8 +1233,8 @@ class WindowManager extends EventEmitter {
     } catch {
       throw new Error('bad new pod');
     }
-    const { namespace, repo, tag, port = null, mounts = [] } = wanted ?? {};
-    if (!kube.validName(namespace) || !registry.validRepo(repo) || !registry.validTag(tag) || !kube.validBrowserPort(port)) {
+    const { namespace, repo, tag, port = null, mounts = [], gpu = false } = wanted ?? {};
+    if (!kube.validName(namespace) || !registry.validRepo(repo) || !registry.validTag(tag) || !kube.validBrowserPort(port) || typeof gpu !== 'boolean') {
       throw new Error('bad pod image');
     }
     kube.checkMounts(mounts);
@@ -1246,7 +1246,7 @@ class WindowManager extends EventEmitter {
     for (const term of this.terminals.values()) for (const p of term.panes.values()) if (p.namespace === namespace) taken.add(p.pod);
     this.config.podNamespace = namespace;
     saveConfig(this.config);
-    return { pod: kube.freeName(app, tag, taken), namespace, newPod: { repo, tag, port, mounts: mounts.map((m) => ({ host: m.host, path: m.path, ...(m.chown && { chown: { uid: m.chown.uid, gid: m.chown.gid } }) })) } };
+    return { pod: kube.freeName(app, tag, taken), namespace, newPod: { repo, tag, port, mounts: mounts.map((m) => ({ host: m.host, path: m.path, ...(m.chown && { chown: { uid: m.chown.uid, gid: m.chown.gid } }) })), gpu } };
   }
 
   #imagePrefixes() {
@@ -1306,7 +1306,7 @@ class WindowManager extends EventEmitter {
   // Makes a new pod (wanted as for 'pod:new:', see #resolvePod) without opening it.
   async createPod(wanted) {
     const { pod, namespace, newPod } = await this.#resolvePod(`new:${JSON.stringify(wanted)}`);
-    await kube.create(this.kubectl, namespace, pod, newPod.repo, newPod.tag, newPod.port, newPod.mounts);
+    await kube.create(this.kubectl, namespace, pod, newPod.repo, newPod.tag, newPod.port, newPod.mounts, newPod.gpu);
     await this.refreshSessions();
     return { pod, namespace };
   }

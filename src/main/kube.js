@@ -7,7 +7,8 @@
 // through `kubectl port-forward` on a localhost port.
 //
 // A pod can also mount host directories (hostPath volumes on the node, which is this
-// host on a one-node cluster), so pods that mount the same one share its files.
+// host on a one-node cluster), so pods that mount the same one share its files, and
+// use the node's NVIDIA GPUs through the nvidia RuntimeClass.
 
 const { execFile, spawn } = require('child_process');
 const os = require('os');
@@ -19,6 +20,7 @@ const IMAGE_ANNOTATION = 'lan-terminal.image';
 const PORT_ANNOTATION = 'lan-terminal.port';
 const MOUNTS_ANNOTATION = 'lan-terminal.mounts';
 const CHOWN_ANNOTATION = 'lan-terminal.chown'; // a chown job's { host, uid, gid }
+const GPU_RUNTIME_CLASS = 'nvidia'; // the NVIDIA container toolkit's RuntimeClass
 const DEFAULT_PORT = 3000; // the desktop UI in linuxserver's Selkies and KasmVNC images
 
 // Kubernetes names (DNS-1123 labels) for namespaces and pods.
@@ -71,7 +73,7 @@ function createNamespace(bin, name) {
 }
 
 // The app's pods in every namespace: [{ namespace, name, image, app, tag, port (null for
-// no browser port), mounts, phase, ready }],
+// no browser port), mounts, gpu, phase, ready }],
 // sorted by namespace then name.
 async function pods(bin) {
   const out = await kubectl(bin, ['get', 'pods', '--all-namespaces', '-l', MANAGED, '-o', 'json']);
@@ -87,7 +89,7 @@ async function pods(bin) {
         mounts = JSON.parse(annotations[MOUNTS_ANNOTATION] ?? '[]');
       } catch {}
       const ready = (p.status.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True');
-      return { namespace: p.metadata.namespace, name: p.metadata.name, image: ref ? `${ref.repo}:${ref.tag}` : null, app: ref?.app ?? null, tag: ref?.tag ?? null, port, mounts, phase: p.status.phase, ready };
+      return { namespace: p.metadata.namespace, name: p.metadata.name, image: ref ? `${ref.repo}:${ref.tag}` : null, app: ref?.app ?? null, tag: ref?.tag ?? null, port, mounts, gpu: p.spec.runtimeClassName === GPU_RUNTIME_CLASS, phase: p.status.phase, ready };
     })
     .sort((a, b) => a.namespace.localeCompare(b.namespace) || a.name.localeCompare(b.name, undefined, { numeric: true }));
 }
@@ -96,8 +98,11 @@ async function pods(bin) {
 // images expect, with the shared memory and seccomp settings the desktops need, and
 // mounts' host directories (see checkMounts). Before the app starts, an init container
 // running as root gives each directory with chown, and everything in it, to its user
-// and group. It runs each time the pod starts. port is the browser port, or null.
-function podSpec(namespace, name, repo, tag, port, mounts = []) {
+// and group. It runs each time the pod starts. port is the browser port, or null. With
+// gpu, the pod runs under the nvidia RuntimeClass and sees all of the node's GPUs,
+// as `docker run --gpus all` does, without taking one from the device plugin, so any
+// number of pods can share them.
+function podSpec(namespace, name, repo, tag, port, mounts = [], gpu = false) {
   const { uid, gid } = os.userInfo();
   const image = `${repo}:${tag}`;
   const app = registry.parseImage(image).app;
@@ -112,6 +117,7 @@ function podSpec(namespace, name, repo, tag, port, mounts = []) {
     },
     spec: {
       restartPolicy: 'Always',
+      ...(gpu && { runtimeClassName: GPU_RUNTIME_CLASS }),
       securityContext: { seccompProfile: { type: 'Unconfined' } },
       initContainers: mounts.flatMap((m, i) => (m.chown ? [{
         name: `chown-${i}`,
@@ -127,6 +133,7 @@ function podSpec(namespace, name, repo, tag, port, mounts = []) {
           { name: 'PUID', value: String(uid) },
           { name: 'PGID', value: String(gid) },
           { name: 'TZ', value: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Etc/UTC' },
+          ...(gpu ? [{ name: 'NVIDIA_VISIBLE_DEVICES', value: 'all' }, { name: 'NVIDIA_DRIVER_CAPABILITIES', value: 'all' }] : []),
         ],
         ...(port !== null && { ports: [{ containerPort: port }] }),
         volumeMounts: [
@@ -152,11 +159,11 @@ function freeName(app, tag, taken) {
   for (let n = 0; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
-function create(bin, namespace, name, repo, tag, port, mounts = []) {
+function create(bin, namespace, name, repo, tag, port, mounts = [], gpu = false) {
   if (!validName(namespace) || !validName(name)) throw new Error(`bad pod: ${namespace}/${name}`);
   if (!registry.validRepo(repo) || !registry.validTag(tag) || !validBrowserPort(port)) throw new Error(`bad image: ${repo}:${tag} port ${port}`);
   checkMounts(mounts);
-  return kubectl(bin, ['create', '-f', '-'], { input: JSON.stringify(podSpec(namespace, name, repo, tag, port, mounts)) });
+  return kubectl(bin, ['create', '-f', '-'], { input: JSON.stringify(podSpec(namespace, name, repo, tag, port, mounts, Boolean(gpu))) });
 }
 
 // Deletes one of the app's pods, and waits for it to be gone. Pods it did not make are

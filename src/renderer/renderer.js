@@ -661,6 +661,7 @@ async function main() {
         <label class="row">Tag <input name="tag" list="launcher-tags-${id}" value="latest" autocomplete="off" spellcheck="false"></label>
         <datalist id="launcher-tags-${id}"></datalist>
         <label class="row">Browser port <input name="port" type="number" min="1" max="65535" placeholder="none" title="The port the image serves its browser UI on (3000 for linuxserver's); empty for none"></label>
+        <label class="row" title="Run the pod under the nvidia RuntimeClass, with all of the node's NVIDIA GPUs"><input name="gpu" type="checkbox"> GPU</label>
         <div class="row">Mounts <button type="button" data-act="add-mount" title="Mount a host directory in the pod">+ Mount</button></div>
         <ul class="mounts"></ul>
         <p class="about"></p>
@@ -745,7 +746,7 @@ async function main() {
           b.title = 'No browser port to show';
         }
         const what = document.createElement('span');
-        what.textContent = [`${p.app ? `${p.app}:${p.tag}` : 'unknown image'}`, p.ready ? 'ready' : p.phase, ...(p.port === null ? ['no browser port'] : []), ...p.mounts.map((m) => `${m.host} → ${m.path}${m.chown ? ` (${m.chown.uid}:${m.chown.gid})` : ''}`)].join(' · ');
+        what.textContent = [`${p.app ? `${p.app}:${p.tag}` : 'unknown image'}`, p.ready ? 'ready' : p.phase, ...(p.port === null ? ['no browser port'] : []), ...(p.gpu ? ['GPU'] : []), ...p.mounts.map((m) => `${m.host} → ${m.path}${m.chown ? ` (${m.chown.uid}:${m.chown.gid})` : ''}`)].join(' · ');
         what.title = p.image ?? '';
         if (deleting.has(`${p.namespace}/${p.name}`)) {
           li.className = 'deleting';
@@ -756,7 +757,7 @@ async function main() {
           li.append(b, what, spin);
           return li;
         }
-        const copy = button('⧉', `Copy ${p.namespace}/${p.name}'s image, tag, browser port and mounts into New pod`, () => copyPod(p), 'copy');
+        const copy = button('⧉', `Copy ${p.namespace}/${p.name}'s image, tag, browser port, GPU and mounts into New pod`, () => copyPod(p), 'copy');
         copy.disabled = !p.image;
         li.append(b, what, copy, button('✕', `Delete ${p.namespace}/${p.name}`, () => deletePod(p), 'delete'));
         return li;
@@ -770,7 +771,7 @@ async function main() {
     };
 
     // Fills New pod in as pod p was made: its image (from the longest preset prefix it
-    // starts with, or typed in full), tag, browser port and the mounts of host
+    // starts with, or typed in full), tag, browser port, GPU and the mounts of host
     // directories still on the list.
     const copyPod = (p) => {
       const colon = p.image.lastIndexOf(':');
@@ -785,6 +786,7 @@ async function main() {
       loadImages();
       form.elements.tag.value = p.image.slice(colon + 1);
       form.elements.port.value = p.port ?? '';
+      form.elements.gpu.checked = p.gpu;
       const kept = p.mounts.filter((m) => st.hostDirs.includes(m.host));
       mounts.splice(0, mounts.length, ...kept.map((m) => ({ host: m.host, path: m.path, chown: Boolean(m.chown), uid: m.chown?.uid ?? st.chownUid, gid: m.chown?.gid ?? st.chownGid })));
       drawMounts();
@@ -1149,7 +1151,7 @@ async function main() {
       if (badId) return say(`The user and group to chown ${badId.host} to are whole numbers, e.g. 1000.`, true);
       const repo = prefix() + name;
       const sent = wanted.map((m) => ({ host: m.host, path: m.path, ...(m.chown && { chown: { uid: Number(m.uid), gid: Number(m.gid) } }) }));
-      createPod({ namespace: ns, repo, tag, port, mounts: sent }, name);
+      createPod({ namespace: ns, repo, tag, port, mounts: sent, gpu: form.elements.gpu.checked }, name);
     });
     load();
 
