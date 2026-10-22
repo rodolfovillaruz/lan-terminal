@@ -101,7 +101,8 @@ async function pods(bin) {
 // and group. It runs each time the pod starts. port is the browser port, or null. With
 // gpu, the pod runs under the nvidia RuntimeClass and sees all of the node's GPUs,
 // as `docker run --gpus all` does, without taking one from the device plugin, so any
-// number of pods can share them.
+// number of pods can share them. The image is pulled each time the pod starts, so a
+// pod made of a tag that has moved runs what the tag names now.
 function podSpec(namespace, name, repo, tag, port, mounts = [], gpu = false) {
   const { uid, gid } = os.userInfo();
   const image = `${repo}:${tag}`;
@@ -129,6 +130,7 @@ function podSpec(namespace, name, repo, tag, port, mounts = [], gpu = false) {
       containers: [{
         name: 'app',
         image,
+        imagePullPolicy: 'Always',
         env: [
           { name: 'PUID', value: String(uid) },
           { name: 'PGID', value: String(gid) },
