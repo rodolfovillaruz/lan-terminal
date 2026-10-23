@@ -676,7 +676,10 @@ async function main() {
         <div class="row">
           <input name="newHostDir" data-enter="add-host-dir" placeholder="/srv/shared" autocomplete="off" spellcheck="false">
           <button type="button" data-act="add-host-dir" title="Offer this directory to new pods' mounts">Add</button>
-          <button type="button" data-act="scan-srv" title="Run a job in the namespace that lists /srv's subdirectories on the node and offers each as a host directory">Scan /srv</button>
+        </div>
+        <div class="row">
+          <label title="How many levels of subdirectories under /srv to list">Levels deep <input name="scanDepth" type="number" min="1" max="20" step="1" value="3" data-enter="scan-srv"></label>
+          <button type="button" data-act="scan-srv" title="Run a job in the namespace that lists /srv's subdirectories on the node, this many levels deep, and offers each as a host directory">Scan /srv</button>
         </div>
         <h3>Chown job</h3>
         <div class="row chown-job">
@@ -1133,9 +1136,11 @@ async function main() {
       }
       if (act === 'scan-srv') {
         const ns = nsSelect.value;
+        const depth = form.elements.scanDepth.value.trim();
         if (!ns || ns === NEW_NS) return say('Pick a namespace first.', true);
+        if (!(/^\d+$/.test(depth) && Number(depth) >= 1 && Number(depth) <= 20)) return say('Levels deep is a whole number from 1 to 20.', true);
         say('Scanning /srv on the node…', false, true);
-        const { added, error } = await window.terminal.scanHostDirs(ns, '/srv');
+        const { added, error } = await window.terminal.scanHostDirs(ns, '/srv', Number(depth));
         if (error) return say(error, true);
         await load();
         say(added.length ? `Added ${added.join(', ')} from /srv.` : 'No subdirectories found in /srv.');

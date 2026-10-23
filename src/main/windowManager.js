@@ -441,12 +441,12 @@ class WindowManager extends EventEmitter {
       }
     });
     // Scans a directory on the node (dir, such as /srv) from the form: runs a job that
-    // lists every subdirectory under it, at any depth, and offers each as a host
-    // directory. Answers { added, error }.
-    ipcMain.handle('launcher:scan-host-dirs', async (event, namespace, dir) => {
+    // lists every subdirectory under it, up to maxDepth levels deep, and offers each as
+    // a host directory. Answers { added, error }.
+    ipcMain.handle('launcher:scan-host-dirs', async (event, namespace, dir, maxDepth) => {
       if (!this.#fromSender(event)) return { added: [], error: 'unknown window' };
       try {
-        return { added: await this.scanHostDirs(namespace, dir), error: null };
+        return { added: await this.scanHostDirs(namespace, dir, maxDepth), error: null };
       } catch (err) {
         return { added: [], error: err.message };
       }
@@ -1337,11 +1337,11 @@ class WindowManager extends EventEmitter {
   }
 
   // Runs a job (see kube.scanHostDir) that lists every subdirectory under dir on the
-  // node, at any depth, and offers each as a host directory preset. Resolves with the
-  // paths added.
-  async scanHostDirs(namespace, dir) {
+  // node, up to maxDepth levels deep, and offers each as a host directory preset.
+  // Resolves with the paths added.
+  async scanHostDirs(namespace, dir, maxDepth = 3) {
     if (!this.kubectl) throw new Error('kubectl is not installed');
-    const names = await kube.scanHostDir(this.kubectl, namespace, dir);
+    const names = await kube.scanHostDir(this.kubectl, namespace, dir, maxDepth);
     const paths = names.map((n) => `${dir === '/' ? '' : dir}/${n}`);
     for (const p of paths) this.setPreset('hostDir', p, true);
     return paths;

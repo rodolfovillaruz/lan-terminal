@@ -233,7 +233,7 @@ html, body {
   padding: 4px 8px;
 }
 .launcher select option { background: #111; }
-.launcher input[name="port"] { width: 7ch; }
+.launcher input[name="port"], .launcher input[name="scanDepth"] { width: 7ch; }
 .launcher button { cursor: pointer; }
 .launcher button:hover, .launcher button:focus-visible { border-color: rgba(80, 160, 255, 0.9); outline: none; }
 .launcher button[type="submit"] { background: rgba(30, 120, 255, 0.35); }

@@ -241,11 +241,14 @@ async function removeChownJob(bin, namespace, name) {
   return kubectl(bin, ['delete', 'job', name, '-n', namespace, '--cascade=foreground'], { timeout: 120000 });
 }
 
-// A scan job lists every subdirectory under a directory on the node (such as /srv), at
-// any depth, read-only, without a pod staying behind: a Job running from busybox, named
-// scan-<random>. Its pod's logs are the subdirectories' paths relative to dir, one per
-// line, such as media and media/movies.
-function scanJobSpec(namespace, dir) {
+const MAX_SCAN_DEPTH = 20;
+const validDepth = (n) => Number.isInteger(n) && n >= 1 && n <= MAX_SCAN_DEPTH;
+
+// A scan job lists every subdirectory under a directory on the node (such as /srv), up
+// to maxDepth levels deep, read-only, without a pod staying behind: a Job running from
+// busybox, named scan-<random>. Its pod's logs are the subdirectories' paths relative
+// to dir, one per line, such as media and media/movies.
+function scanJobSpec(namespace, dir, maxDepth) {
   return {
     apiVersion: 'batch/v1',
     kind: 'Job',
@@ -264,7 +267,7 @@ function scanJobSpec(namespace, dir) {
           containers: [{
             name: 'scan',
             image: CHOWN_IMAGE,
-            command: ['sh', '-c', 'cd /mnt && find . -mindepth 1 -type d | cut -c3-'],
+            command: ['sh', '-c', `cd /mnt && find . -mindepth 1 -maxdepth ${maxDepth} -type d | cut -c3-`],
             volumeMounts: [{ name: 'host', mountPath: '/mnt', readOnly: true }],
           }],
           volumes: [{ name: 'host', hostPath: { path: dir, type: 'DirectoryOrCreate' } }],
@@ -290,13 +293,14 @@ async function waitJob(bin, namespace, name, timeoutMs = 30000) {
 }
 
 // Runs a scan job over a directory on the node (such as /srv) and resolves with the
-// sorted paths of every subdirectory under it, at any depth, relative to dir (such as
-// media and media/movies). The job and its pod are gone either way by the time this
-// resolves or throws.
-async function scanHostDir(bin, namespace, dir) {
+// sorted paths of every subdirectory under it, up to maxDepth levels deep, relative to
+// dir (such as media and media/movies). The job and its pod are gone either way by the
+// time this resolves or throws.
+async function scanHostDir(bin, namespace, dir, maxDepth) {
   if (!validName(namespace)) throw new Error(`bad namespace: ${namespace}`);
   if (!validPath(dir)) throw new Error(`a directory is an absolute path: ${dir}`);
-  const created = await kubectl(bin, ['create', '-f', '-', '-o', 'name'], { input: JSON.stringify(scanJobSpec(namespace, dir)) });
+  if (!validDepth(maxDepth)) throw new Error(`levels deep is a whole number from 1 to ${MAX_SCAN_DEPTH}`);
+  const created = await kubectl(bin, ['create', '-f', '-', '-o', 'name'], { input: JSON.stringify(scanJobSpec(namespace, dir, maxDepth)) });
   const name = created.trim().split('/').pop();
   try {
     const state = await waitJob(bin, namespace, name);
