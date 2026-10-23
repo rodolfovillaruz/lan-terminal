@@ -217,9 +217,6 @@ html, body {
 .launcher .mounts li, .launcher .host-dirs li { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
 .launcher .mounts li.none, .launcher .host-dirs li.none { opacity: 0.6; }
 .launcher .mounts li > input { flex: 1; min-width: 10ch; }
-.launcher .mounts .chown { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
-.launcher .mounts .chown input.id { flex: none; width: 7ch; min-width: 0; }
-.launcher .mounts .chown input:disabled { opacity: 0.4; }
 .launcher .mounts button.delete, .launcher .host-dirs button.delete { margin-left: auto; padding: 2px 8px; }
 .launcher .mounts button.delete:hover, .launcher .host-dirs button.delete:hover,
 .launcher .mounts button.delete:focus-visible, .launcher .host-dirs button.delete:focus-visible { border-color: #ff8a80; color: #ff8a80; }

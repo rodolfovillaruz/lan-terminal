@@ -1234,9 +1234,9 @@ class WindowManager extends EventEmitter {
 
   // 'pod:<namespace>:<name>' opens a pod; 'pod:new:<json>' makes one from { namespace,
   // repo, tag, port, mounts, gpu } (port the browser port, or null for none; mounts:
-  // [{ host, path, chown }], each host one of hostDirs; gpu true for the node's GPUs),
-  // named <app>-<tag>-<n> with the smallest n free in the namespace, and makes the
-  // namespace the one the next new pod form starts on.
+  // [{ host, path }], each host one of hostDirs; gpu true for the node's GPUs), named
+  // <app>-<tag>-<n> with the smallest n free in the namespace, and makes the namespace
+  // the one the next new pod form starts on.
   async #resolvePod(spec) {
     if (!this.kubectl) throw new Error('kubectl is not installed');
     if (!spec.startsWith('new:')) {
@@ -1264,7 +1264,7 @@ class WindowManager extends EventEmitter {
     for (const term of this.terminals.values()) for (const p of term.panes.values()) if (p.namespace === namespace) taken.add(p.pod);
     this.config.podNamespace = namespace;
     saveConfig(this.config);
-    return { pod: kube.freeName(app, tag, taken), namespace, newPod: { repo, tag, port, mounts: mounts.map((m) => ({ host: m.host, path: m.path, ...(m.chown && { chown: { uid: m.chown.uid, gid: m.chown.gid } }) })), gpu } };
+    return { pod: kube.freeName(app, tag, taken), namespace, newPod: { repo, tag, port, mounts: mounts.map((m) => ({ host: m.host, path: m.path })), gpu } };
   }
 
   #imagePrefixes() {
@@ -1300,7 +1300,7 @@ class WindowManager extends EventEmitter {
 
   // What a launcher pane's form offers: the namespaces, the one to start on (where the
   // last new pod went, while it exists), the app's pods and chown jobs, and the presets: image
-  // prefixes, host directories and the user and group a mount's chown starts on.
+  // prefixes, host directories and the user and group a chown job starts on.
   // Whatever cannot be listed comes back empty, with
   // the reason in errors. The images under a prefix come separately (launcher:images).
   async launcherState() {

@@ -797,7 +797,7 @@ async function main() {
       form.elements.port.value = p.port ?? '';
       form.elements.gpu.checked = p.gpu;
       const kept = p.mounts.filter((m) => st.hostDirs.includes(m.host));
-      mounts.splice(0, mounts.length, ...kept.map((m) => ({ host: m.host, path: m.path, chown: Boolean(m.chown), uid: m.chown?.uid ?? st.chownUid, gid: m.chown?.gid ?? st.chownGid })));
+      mounts.splice(0, mounts.length, ...kept.map((m) => ({ host: m.host, path: m.path })));
       drawMounts();
       imageInput.focus();
       const left = p.mounts.filter((m) => !kept.includes(m)).map((m) => m.host);
@@ -885,22 +885,7 @@ async function main() {
         host.addEventListener('change', () => { m.host = host.value; });
         const into = Object.assign(document.createElement('input'), { value: m.path, placeholder: '/data', autocomplete: 'off', spellcheck: false, title: 'Where it goes in the pod' });
         into.addEventListener('input', () => { m.path = into.value.trim(); });
-        // chown gives the directory and all in it to a user and group before the app starts.
-        const chown = Object.assign(document.createElement('input'), { type: 'checkbox', checked: Boolean(m.chown) });
-        const id = (key, title) => {
-          const input = Object.assign(document.createElement('input'), { type: 'number', min: 0, step: 1, value: m[key], title, className: 'id', disabled: !m.chown });
-          input.addEventListener('input', () => { m[key] = input.value; });
-          return input;
-        };
-        const uid = id('uid', 'User id');
-        const gid = id('gid', 'Group id');
-        chown.addEventListener('change', () => {
-          m.chown = chown.checked;
-          uid.disabled = gid.disabled = !m.chown;
-        });
-        const chownLabel = Object.assign(document.createElement('label'), { className: 'chown', title: 'Give the directory and everything in it to this user and group before the app starts' });
-        chownLabel.append(chown, ' chown', uid, ':', gid);
-        li.append(host, Object.assign(document.createElement('span'), { textContent: '→' }), into, chownLabel, button('✕', 'Leave this mount out', () => {
+        li.append(host, Object.assign(document.createElement('span'), { textContent: '→' }), into, button('✕', 'Leave this mount out', () => {
           mounts.splice(i, 1);
           drawMounts();
         }, 'delete'));
@@ -1138,7 +1123,7 @@ async function main() {
         if (await preset('prefix', value, false)) say(`Took ${value} off the list.`);
       }
       if (act === 'add-mount') {
-        mounts.push({ host: st?.hostDirs[0] ?? '', path: '', chown: false, uid: st?.chownUid ?? 1000, gid: st?.chownGid ?? 1000 });
+        mounts.push({ host: st?.hostDirs[0] ?? '', path: '' });
         drawMounts();
         mountList.querySelector('li:last-child input')?.focus();
       }
@@ -1178,11 +1163,8 @@ async function main() {
       if (port !== null && !(Number.isInteger(port) && port >= 1 && port <= 65535)) return say('The browser port is a number from 1 to 65535, or empty for none.', true);
       const bad = wanted.find((m) => !m.path.startsWith('/'));
       if (bad) return say(`A path in the pod starts with "/": ${bad.path}`, true);
-      const isId = (v) => /^\d+$/.test(String(v).trim()) && Number(v) < 2 ** 31;
-      const badId = wanted.find((m) => m.chown && !(isId(m.uid) && isId(m.gid)));
-      if (badId) return say(`The user and group to chown ${badId.host} to are whole numbers, e.g. 1000.`, true);
       const repo = prefix() + name;
-      const sent = wanted.map((m) => ({ host: m.host, path: m.path, ...(m.chown && { chown: { uid: Number(m.uid), gid: Number(m.gid) } }) }));
+      const sent = wanted.map((m) => ({ host: m.host, path: m.path }));
       createPod({ namespace: ns, repo, tag, port, mounts: sent, gpu: form.elements.gpu.checked }, name);
     });
     load();

@@ -26,7 +26,7 @@ const DEFAULTS = {
   // directories a new pod can mount.
   imagePrefixes: ['lscr.io/linuxserver/'],
   hostDirs: [],
-  chownUid: 1000, // the user and group a new pod's mount is chowned to, to start with
+  chownUid: 1000, // the user and group a new chown job gives a host directory to, to start with
   chownGid: 1000,
   // For Android device panes; null = find on $PATH (adb also in the Android SDK).
   adb: null,

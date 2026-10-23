@@ -36,9 +36,8 @@ const RESERVED_PATHS = ['/config', '/dev/shm']; // the pod's own volumes
 const CHOWN_IMAGE = 'docker.io/library/busybox:1.37';
 const validId = (id) => Number.isInteger(id) && id >= 0 && id < 2 ** 31;
 
-// [{ host, path, chown }]: each host directory goes to an absolute path in the pod, no
-// two to the same one nor over the pod's own volumes. chown, if there, is { uid, gid }
-// for the directory to belong to. Throws when they cannot.
+// [{ host, path }]: each host directory goes to an absolute path in the pod, no two to
+// the same one nor over the pod's own volumes. Throws when they cannot.
 function checkMounts(mounts) {
   if (!Array.isArray(mounts) || mounts.length > 32) throw new Error('bad mounts');
   const seen = new Set(RESERVED_PATHS);
@@ -47,7 +46,6 @@ function checkMounts(mounts) {
     if (!validPath(m.path) || m.path === '/') throw new Error(`a path in the pod is an absolute path other than /: ${m.path}`);
     if (RESERVED_PATHS.includes(m.path)) throw new Error(`${m.path} is the pod's own volume`);
     if (seen.has(m.path)) throw new Error(`two volumes go to ${m.path} in the pod`);
-    if (m.chown && !(validId(m.chown.uid) && validId(m.chown.gid))) throw new Error(`a user or group id is a whole number from 0: ${m.host}`);
     seen.add(m.path);
   }
 }
@@ -96,9 +94,7 @@ async function pods(bin) {
 
 // The pod for a new instance of repo:tag, run as the host user as the linuxserver
 // images expect, with the shared memory and seccomp settings the desktops need, and
-// mounts' host directories (see checkMounts). Before the app starts, an init container
-// running as root gives each directory with chown, and everything in it, to its user
-// and group. It runs each time the pod starts. port is the browser port, or null. With
+// mounts' host directories (see checkMounts). port is the browser port, or null. With
 // gpu, the pod runs under the nvidia RuntimeClass and sees all of the node's GPUs,
 // as `docker run --gpus all` does, without taking one from the device plugin, so any
 // number of pods can share them. The image is pulled each time the pod starts, so a
@@ -120,13 +116,6 @@ function podSpec(namespace, name, repo, tag, port, mounts = [], gpu = false) {
       restartPolicy: 'Always',
       ...(gpu && { runtimeClassName: GPU_RUNTIME_CLASS }),
       securityContext: { seccompProfile: { type: 'Unconfined' } },
-      initContainers: mounts.flatMap((m, i) => (m.chown ? [{
-        name: `chown-${i}`,
-        image: CHOWN_IMAGE,
-        command: ['chown', '-R', `${m.chown.uid}:${m.chown.gid}`, '/mnt'],
-        securityContext: { runAsUser: 0, runAsGroup: 0 },
-        volumeMounts: [{ name: `host-${i}`, mountPath: '/mnt' }],
-      }] : [])),
       containers: [{
         name: 'app',
         image,
@@ -176,9 +165,9 @@ async function remove(bin, namespace, name) {
   return kubectl(bin, ['delete', 'pod', name, '-n', namespace], { timeout: 120000 });
 }
 
-// A chown job gives a host directory and everything in it to a user and group, as a
-// mount's chown does but once, without a pod: a Job running chown -R as root from
-// busybox, named chown-<random>. It stays, with its pod, until it is deleted.
+// A chown job gives a host directory and everything in it to a user and group, once:
+// a Job running chown -R as root from busybox, named chown-<random>. It stays, with
+// its pod, until it is deleted.
 function chownJobSpec(namespace, host, uid, gid) {
   return {
     apiVersion: 'batch/v1',
