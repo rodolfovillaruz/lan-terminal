@@ -441,8 +441,8 @@ class WindowManager extends EventEmitter {
       }
     });
     // Scans a directory on the node (dir, such as /srv) from the form: runs a job that
-    // lists its immediate subdirectories and offers each as a host directory. Answers
-    // { added, error }.
+    // lists every subdirectory under it, at any depth, and offers each as a host
+    // directory. Answers { added, error }.
     ipcMain.handle('launcher:scan-host-dirs', async (event, namespace, dir) => {
       if (!this.#fromSender(event)) return { added: [], error: 'unknown window' };
       try {
@@ -1336,8 +1336,9 @@ class WindowManager extends EventEmitter {
     await kube.createChownJob(this.kubectl, namespace, host, uid, gid);
   }
 
-  // Runs a job (see kube.scanHostDir) that lists dir's immediate subdirectories on the
-  // node and offers each as a host directory preset. Resolves with the paths added.
+  // Runs a job (see kube.scanHostDir) that lists every subdirectory under dir on the
+  // node, at any depth, and offers each as a host directory preset. Resolves with the
+  // paths added.
   async scanHostDirs(namespace, dir) {
     if (!this.kubectl) throw new Error('kubectl is not installed');
     const names = await kube.scanHostDir(this.kubectl, namespace, dir);

@@ -241,9 +241,10 @@ async function removeChownJob(bin, namespace, name) {
   return kubectl(bin, ['delete', 'job', name, '-n', namespace, '--cascade=foreground'], { timeout: 120000 });
 }
 
-// A scan job lists the immediate subdirectories of a directory on the node (such as
-// /srv), read-only, without a pod staying behind: a Job running from busybox, named
-// scan-<random>. Its pod's logs are the directory names, one per line.
+// A scan job lists every subdirectory under a directory on the node (such as /srv), at
+// any depth, read-only, without a pod staying behind: a Job running from busybox, named
+// scan-<random>. Its pod's logs are the subdirectories' paths relative to dir, one per
+// line, such as media and media/movies.
 function scanJobSpec(namespace, dir) {
   return {
     apiVersion: 'batch/v1',
@@ -263,7 +264,7 @@ function scanJobSpec(namespace, dir) {
           containers: [{
             name: 'scan',
             image: CHOWN_IMAGE,
-            command: ['sh', '-c', 'for d in /mnt/*/; do [ -d "$d" ] && basename "$d"; done'],
+            command: ['sh', '-c', 'cd /mnt && find . -mindepth 1 -type d | cut -c3-'],
             volumeMounts: [{ name: 'host', mountPath: '/mnt', readOnly: true }],
           }],
           volumes: [{ name: 'host', hostPath: { path: dir, type: 'DirectoryOrCreate' } }],
@@ -289,8 +290,9 @@ async function waitJob(bin, namespace, name, timeoutMs = 30000) {
 }
 
 // Runs a scan job over a directory on the node (such as /srv) and resolves with the
-// sorted names of its immediate subdirectories. The job and its pod are gone either way
-// by the time this resolves or throws.
+// sorted paths of every subdirectory under it, at any depth, relative to dir (such as
+// media and media/movies). The job and its pod are gone either way by the time this
+// resolves or throws.
 async function scanHostDir(bin, namespace, dir) {
   if (!validName(namespace)) throw new Error(`bad namespace: ${namespace}`);
   if (!validPath(dir)) throw new Error(`a directory is an absolute path: ${dir}`);

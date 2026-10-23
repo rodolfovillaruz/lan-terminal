@@ -30,8 +30,8 @@ contextBridge.exposeInMainWorld('terminal', {
   chownJobs: () => ipcRenderer.invoke('launcher:chown-jobs'),
   createChownJob: (namespace, host, uid, gid) => ipcRenderer.invoke('launcher:create-chown-job', namespace, host, uid, gid),
   deleteChownJob: (namespace, name) => ipcRenderer.invoke('launcher:delete-chown-job', namespace, name),
-  // Runs a job that lists dir's (e.g. /srv) immediate subdirectories on the node and
-  // offers each as a host directory. Resolves with { added, error }.
+  // Runs a job that lists every subdirectory under dir (e.g. /srv) on the node, at any
+  // depth, and offers each as a host directory. Resolves with { added, error }.
   scanHostDirs: (namespace, dir) => ipcRenderer.invoke('launcher:scan-host-dirs', namespace, dir),
   // true when the dialog says yes; then deletePod answers null, or an error message.
   confirmDeletePod: (namespace, pod) => ipcRenderer.invoke('launcher:confirm-delete-pod', namespace, pod),
