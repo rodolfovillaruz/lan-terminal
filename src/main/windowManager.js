@@ -366,6 +366,12 @@ class WindowManager extends EventEmitter {
         return err.message;
       }
     });
+    // Clears every host directory preset from the form.
+    ipcMain.handle('launcher:clear-host-dirs', (event) => {
+      if (!this.#fromSender(event)) return 'unknown window';
+      this.clearHostDirs();
+      return null;
+    });
     ipcMain.handle('launcher:namespace', async (event, name) => {
       if (!this.#fromSender(event)) return null;
       try {
@@ -1295,6 +1301,12 @@ class WindowManager extends EventEmitter {
     } else {
       throw new Error('bad preset');
     }
+    saveConfig(this.config);
+  }
+
+  // Takes every host directory off the list. Leaves the pods that mount them alone.
+  clearHostDirs() {
+    this.config.hostDirs = [];
     saveConfig(this.config);
   }
 

@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('terminal', {
   listImages: (prefix) => ipcRenderer.invoke('launcher:images', prefix),
   listTags: (repo) => ipcRenderer.invoke('launcher:tags', repo),
   setPreset: (kind, value, on) => ipcRenderer.invoke('launcher:preset', kind, value, on),
+  clearHostDirs: () => ipcRenderer.invoke('launcher:clear-host-dirs'),
   createPod: (wanted) => ipcRenderer.invoke('launcher:create-pod', wanted),
   launch: (paneId, choice) => ipcRenderer.invoke('launcher:open', paneId, choice),
   // Chown jobs: listing ({ jobs, error }), and making or deleting one (an error or null).

@@ -676,6 +676,7 @@ async function main() {
         <div class="row">
           <input name="newHostDir" data-enter="add-host-dir" placeholder="/srv/shared" autocomplete="off" spellcheck="false">
           <button type="button" data-act="add-host-dir" title="Offer this directory to new pods' mounts">Add</button>
+          <button type="button" data-act="clear-host-dirs" title="Take every host directory off the list">Clear all</button>
         </div>
         <div class="row">
           <label title="How many levels of subdirectories under /srv to list">Levels deep <input name="scanDepth" type="number" min="1" max="20" step="1" value="3" data-enter="scan-srv"></label>
@@ -912,6 +913,7 @@ async function main() {
         return li;
       }));
       if (!st.hostDirs.length) hostDirList.append(Object.assign(document.createElement('li'), { className: 'none', textContent: 'None yet.' }));
+      form.querySelector('[data-act="clear-host-dirs"]').disabled = !st.hostDirs.length;
     };
 
     // The namespace's chown jobs: a spinner while one runs, and ✕ to delete it once it
@@ -1133,6 +1135,12 @@ async function main() {
         if (!(await preset('hostDir', value, true))) return;
         form.elements.newHostDir.value = '';
         say(`Added ${value}; new pods can mount it.`);
+      }
+      if (act === 'clear-host-dirs') {
+        if (!st?.hostDirs.length) return;
+        await window.terminal.clearHostDirs();
+        await load();
+        say('Cleared the host directories.');
       }
       if (act === 'scan-srv') {
         const ns = nsSelect.value;
