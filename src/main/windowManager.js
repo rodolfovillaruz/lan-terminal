@@ -336,15 +336,15 @@ class WindowManager extends EventEmitter {
     // A launcher pane's form: what it offers, a new namespace, and the choice that
     // turns the pane into a pod ('pod:…', see #resolvePod) or a shell.
     ipcMain.handle('launcher:state', (event) => (this.#fromSender(event) ? this.launcherState() : null));
-    // The image breadcrumbs' suggestions: what goes after a prefix, and a repository's
-    // tags. Each answers { images } or { tags }, empty with an error when the registry
-    // does not say.
-    ipcMain.handle('launcher:images', async (event, prefix) => {
+    // The image dropdowns' suggestions: a registry's repositories (a Docker Hub
+    // namespace's, for Docker Hub), and a repository's tags. Each answers { repos } or
+    // { tags }, empty with an error when the registry does not say.
+    ipcMain.handle('launcher:repos', async (event, host, ns) => {
       if (!this.#fromSender(event)) return null;
       try {
-        return { images: await registry.list(prefix), error: null };
+        return { repos: await registry.repositories(host, ns), error: null };
       } catch (err) {
-        return { images: [], error: err.message };
+        return { repos: [], error: err.message };
       }
     });
     ipcMain.handle('launcher:tags', async (event, repo) => {
@@ -355,7 +355,7 @@ class WindowManager extends EventEmitter {
         return { tags: [], error: err.message };
       }
     });
-    // Adds (on) or removes a preset: kind 'prefix' (an image prefix) or 'hostDir'.
+    // Adds (on) or removes a preset: kind 'hostDir' (a host directory).
     // Answers null, or what went wrong.
     ipcMain.handle('launcher:preset', (event, kind, value, on) => {
       if (!this.#fromSender(event)) return 'unknown window';
@@ -1267,11 +1267,6 @@ class WindowManager extends EventEmitter {
     return { pod: kube.freeName(app, tag, taken), namespace, newPod: { repo, tag, port, mounts: mounts.map((m) => ({ host: m.host, path: m.path })), gpu } };
   }
 
-  #imagePrefixes() {
-    const prefixes = this.config.imagePrefixes;
-    return Array.isArray(prefixes) ? prefixes.filter(registry.validPrefix) : [];
-  }
-
   #hostDirs() {
     const dirs = this.config.hostDirs;
     return Array.isArray(dirs) ? dirs.filter(kube.validPath) : [];
@@ -1282,12 +1277,7 @@ class WindowManager extends EventEmitter {
   // when a pod mounts it. Removing one leaves the pods that mount it alone.
   setPreset(kind, value, on) {
     if (typeof value !== 'string') throw new Error('bad preset');
-    if (kind === 'prefix') {
-      const prefix = value.trim().replace(/\/*$/, '/');
-      if (on && !registry.validPrefix(prefix)) throw new Error(`${value} is not an image prefix, such as lscr.io/linuxserver/ or ghcr.io/org/`);
-      const rest = this.#imagePrefixes().filter((p) => p !== prefix);
-      this.config.imagePrefixes = on ? [...rest, prefix] : rest;
-    } else if (kind === 'hostDir') {
+    if (kind === 'hostDir') {
       const dir = value.trim().length > 1 ? value.trim().replace(/\/+$/, '') : value.trim();
       if (on && !kube.validPath(dir)) throw new Error(`${value} is not an absolute path`);
       const rest = this.#hostDirs().filter((d) => d !== dir);
@@ -1299,13 +1289,13 @@ class WindowManager extends EventEmitter {
   }
 
   // What a launcher pane's form offers: the namespaces, the one to start on (where the
-  // last new pod went, while it exists), the app's pods and chown jobs, and the presets: image
-  // prefixes, host directories and the user and group a chown job starts on.
-  // Whatever cannot be listed comes back empty, with
-  // the reason in errors. The images under a prefix come separately (launcher:images).
+  // last new pod went, while it exists), the app's pods and chown jobs, and the presets: host
+  // directories and the user and group a chown job starts on. Whatever cannot be listed
+  // comes back empty, with the reason in errors. The repositories and tags a registry
+  // offers come separately (launcher:repos, launcher:tags).
   async launcherState() {
     const id = (n) => (Number.isInteger(n) && n >= 0 ? n : 1000);
-    const presets = { prefixes: this.#imagePrefixes(), hostDirs: this.#hostDirs(), chownUid: id(this.config.chownUid), chownGid: id(this.config.chownGid) };
+    const presets = { hostDirs: this.#hostDirs(), chownUid: id(this.config.chownUid), chownGid: id(this.config.chownGid) };
     if (!this.kubectl) return { namespaces: [], namespace: null, pods: [], jobs: [], ...presets, errors: ['kubectl is not installed'] };
     const errors = [];
     const failed = (fallback) => (err) => {

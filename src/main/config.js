@@ -22,9 +22,7 @@ const DEFAULTS = {
   docker: null, // for linuxserver app panes (webtop, chromium, ...); null = find on $PATH
   kubectl: null, // for Kubernetes pod panes; null = find on $PATH
   podNamespace: null, // where the last new pod went; a new pane's form starts there
-  // The New pane form's presets: where a new pod's image name starts, and the host
-  // directories a new pod can mount.
-  imagePrefixes: ['lscr.io/linuxserver/'],
+  // The New pane form's presets: the host directories a new pod can mount.
   hostDirs: [],
   chownUid: 1000, // the user and group a new chown job gives a host directory to, to start with
   chownGid: 1000,

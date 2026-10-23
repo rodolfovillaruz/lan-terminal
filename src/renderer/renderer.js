@@ -624,9 +624,10 @@ async function main() {
   // new pod went to. Picking a pod or the planner turns the pane into it; a new pod
   // joins the list and the form stays. A pod with no browser port has nothing to show.
   //
-  // A new pod's image is a breadcrumb: a preset prefix (lscr.io/linuxserver/ to start
-  // with), then a crumb for each part typed before a "/", then the name. The name's
-  // suggestions are what the registry lists under the crumbs so far. The pod can mount
+  // A new pod's image is three dropdowns: a registry from REGISTRIES, then once it is
+  // left one of the repositories it lists, then once that is left one of its tags. Any
+  // repository or tag typed works too. Docker Hub lists no catalog, so it offers the
+  // official images, and typing a namespace and "/" (bitnami/) lists that one's. The pod can mount
   // host directories from the form's presets, so pods that mount the same one share it.
   const createLauncherPane = (id) => {
     const el = document.createElement('div');
@@ -644,21 +645,16 @@ async function main() {
         <h3>Open a pod</h3>
         <ul class="pods"></ul>
         <h3>New pod</h3>
-        <div class="row">Image
-          <span class="crumbs">
-            <select name="prefix" title="Where the image's name starts"></select>
-            <span class="path"></span>
-            <input name="image" list="launcher-images-${id}" placeholder="webtop" autocomplete="off" spellcheck="false">
-          </span>
-          <button type="button" data-act="remove-prefix" title="Take this prefix off the list">✕</button>
+        <label class="row">Registry <select name="registry"></select></label>
+        <div class="row">
+          <label>Repository <input name="repo" list="launcher-repos-${id}" autocomplete="off" spellcheck="false"></label>
+          <i class="spinner inline repo-spinner" hidden title="Listing repositories…"></i>
         </div>
-        <datalist id="launcher-images-${id}"></datalist>
-        <div class="row new-prefix" hidden>
-          <input name="newPrefix" data-enter="add-prefix" placeholder="ghcr.io/org/" autocomplete="off" spellcheck="false">
-          <button type="button" data-act="add-prefix">Add</button>
-          <button type="button" data-act="cancel-prefix">Cancel</button>
+        <datalist id="launcher-repos-${id}"></datalist>
+        <div class="row">
+          <label>Tag <input name="tag" list="launcher-tags-${id}" value="latest" autocomplete="off" spellcheck="false"></label>
+          <i class="spinner inline tag-spinner" hidden title="Listing tags…"></i>
         </div>
-        <label class="row">Tag <input name="tag" list="launcher-tags-${id}" value="latest" autocomplete="off" spellcheck="false"></label>
         <datalist id="launcher-tags-${id}"></datalist>
         <label class="row">Browser port <input name="port" type="number" min="1" max="65535" placeholder="none" title="The port the image serves its browser UI on (3000 for linuxserver's); empty for none"></label>
         <label class="row" title="Run the pod under the nvidia RuntimeClass, with all of the node's NVIDIA GPUs"><input name="gpu" type="checkbox"> GPU</label>
@@ -691,14 +687,15 @@ async function main() {
       </form>`;
     const form = el.querySelector('form');
     const nsSelect = form.elements.namespace;
-    const prefixSelect = form.elements.prefix;
-    const imageInput = form.elements.image;
+    const registrySelect = form.elements.registry;
+    const repoInput = form.elements.repo;
+    const tagInput = form.elements.tag;
     const newNs = el.querySelector('.new-namespace');
-    const newPrefix = el.querySelector('.new-prefix');
     const podList = el.querySelector('.pods');
-    const pathEl = el.querySelector('.crumbs .path');
-    const imageList = el.querySelector(`#launcher-images-${id}`);
+    const repoList = el.querySelector(`#launcher-repos-${id}`);
     const tagList = el.querySelector(`#launcher-tags-${id}`);
+    const repoSpinner = el.querySelector('.repo-spinner');
+    const tagSpinner = el.querySelector('.tag-spinner');
     const mountList = el.querySelector('.mounts');
     const hostDirList = el.querySelector('.host-dirs');
     const hostDirInput = form.elements.newHostDir;
@@ -709,7 +706,8 @@ async function main() {
     const about = el.querySelector('.about');
     const status = el.querySelector('.status');
     const NEW_NS = '\u0000new'; // the "New namespace…" option, which no namespace can be named
-    const NEW_PREFIX = '\u0000new'; // and "Add prefix…", which no prefix can be
+    const REGISTRIES = ['yes.ph', 'lscr.io', 'docker.io'];
+    const HUB = 'docker.io'; // lists no catalog, only a namespace's repositories
     // One part of a repository's name, as registries have it.
     const COMPONENT = /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/;
     let st = null; // the last launcherState
@@ -718,11 +716,10 @@ async function main() {
     // dialog asks at a time.
     const deleting = new Set();
     let confirming = false;
-    let crumbs = []; // the image name's parts after the prefix, before the name
-    let images = []; // what the registry lists after prefix(), as last listed
-    let listing = 0; // the latest listImages and listTags, so older answers are dropped
+    let repos = []; // what the registry lists, as last listed
+    let listedNs = null; // the Docker Hub namespace repos is of
+    let listing = 0; // the latest listRepos and listTags, so older answers are dropped
     let tagging = 0;
-    let tagTimer = null;
     let dirListing = 0; // the latest listHostSubdirs, so older answers are dropped
     const mounts = []; // the new pod's [{ host, path }]
     const deletingJobs = new Set(); // the chown jobs being deleted, as 'namespace/name'
@@ -742,7 +739,16 @@ async function main() {
       b.addEventListener('click', onClick);
       return b;
     };
-    const prefix = () => (prefixSelect.value === NEW_PREFIX ? '' : prefixSelect.value) + crumbs.map((c) => `${c}/`).join('');
+    // The repository typed, as "lscr.io/linuxserver/webtop", or null when it is no name.
+    const repoName = () => {
+      const repo = repoInput.value.trim();
+      return repo.split('/').every((c) => COMPONENT.test(c)) ? repo : null;
+    };
+    // The Docker Hub namespace typed before a "/", if any.
+    const hubNs = () => {
+      const [ns, ...rest] = repoInput.value.trim().split('/');
+      return registrySelect.value === HUB && rest.length && COMPONENT.test(ns) ? ns : '';
+    };
 
     const drawPods = () => {
       const ns = nsSelect.value;
@@ -779,100 +785,88 @@ async function main() {
       }
     };
 
-    // Fills New pod in as pod p was made: its image (from the longest preset prefix it
-    // starts with, or typed in full), tag, browser port, GPU and the mounts of host
-    // directories still on the list.
+    // Fills New pod in as pod p was made: its image (adding its registry to the list
+    // when it is not there), tag, browser port, GPU and the mounts of host directories
+    // still on the list.
     const copyPod = (p) => {
       const colon = p.image.lastIndexOf(':');
-      const repo = p.image.slice(0, colon);
-      const start = st.prefixes.filter((x) => repo.startsWith(x)).sort((a, b) => b.length - a.length)[0];
-      prefixSelect.value = start ?? NEW_PREFIX;
-      newPrefix.hidden = true;
-      const parts = repo.slice(start?.length ?? 0).split('/');
-      imageInput.value = parts.pop();
-      crumbs = parts;
-      drawCrumbs();
-      loadImages();
-      form.elements.tag.value = p.image.slice(colon + 1);
+      const parts = p.image.slice(0, colon).split('/');
+      const host = parts.length > 1 && /[.:]|^localhost$/.test(parts[0]) ? parts.shift() : HUB;
+      if (![...registrySelect.options].some((o) => o.value === host)) registrySelect.append(option(host));
+      registrySelect.value = host;
+      repoInput.value = parts.join('/');
+      tagInput.value = p.image.slice(colon + 1);
+      loadRepos();
+      loadTags();
       form.elements.port.value = p.port ?? '';
       form.elements.gpu.checked = p.gpu;
       const kept = p.mounts.filter((m) => st.hostDirs.includes(m.host));
       mounts.splice(0, mounts.length, ...kept.map((m) => ({ host: m.host, path: m.path })));
       drawMounts();
-      imageInput.focus();
+      repoInput.focus();
       const left = p.mounts.filter((m) => !kept.includes(m)).map((m) => m.host);
       if (left.length) say(`Copied ${p.namespace}/${p.name}, but not its mounts of ${left.join(', ')}: they are no longer host directories.`, true);
       else say(`Copied ${p.namespace}/${p.name}; Create pod makes another like it.`);
     };
 
-    // The crumbs between the prefix and the name; clicking one goes back to it.
-    const drawCrumbs = () => {
-      pathEl.replaceChildren(...crumbs.map((c, i) => button(c, 'Back to this part', () => {
-        crumbs = crumbs.slice(0, i);
-        imageInput.value = c;
-        drawCrumbs();
-        loadImages();
-        imageInput.focus();
-      }, 'crumb')));
-    };
-    const loadImages = async () => {
+    // The registry's repositories for the Repository dropdown: on Docker Hub, the
+    // namespace's typed, or the official images.
+    const loadRepos = async () => {
       const at = ++listing;
-      const under = prefix();
-      images = [];
-      imageList.replaceChildren();
-      drawImage();
-      if (!under) return;
-      const res = await window.terminal.listImages(under);
-      if (at !== listing || !res) return;
-      images = res.images;
-      imageList.replaceChildren(...images.map((i) => option(i.name, i.name.endsWith('/') ? 'more…' : i.category)));
-      drawImage();
-    };
-    // The about line and the tags of the name typed, which come with linuxserver's
-    // catalog and are listed apart for other registries.
-    const drawImage = () => {
-      const name = imageInput.value.trim();
-      const image = images.find((i) => i.name === name);
-      about.textContent = image?.description ? `${image.category ? `${image.category}. ` : ''}${image.description.replace(/\[([^\]]*)\]/g, '$1')}` : '';
-      const showTags = (tags) => tagList.replaceChildren(...(tags.length ? tags : ['latest']).map((t) => option(t, '')));
-      clearTimeout(tagTimer);
-      const at = ++tagging;
-      if (image?.tags) return showTags(image.tags);
-      showTags([]);
-      if (!COMPONENT.test(name) || !prefix()) return;
-      tagTimer = setTimeout(async () => {
-        const res = await window.terminal.listTags(prefix() + name);
-        if (at === tagging && res) showTags(res.tags);
-      }, 300);
-    };
-    // A "/" typed or picked turns the parts before it into crumbs; a ":" sends what
-    // follows it to the tag.
-    const imageChanged = () => {
-      let value = imageInput.value;
-      const colon = value.indexOf(':');
-      if (colon >= 0) {
-        form.elements.tag.value = value.slice(colon + 1) || 'latest';
-        value = value.slice(0, colon);
+      const host = registrySelect.value;
+      const ns = hubNs();
+      repoInput.placeholder = host === HUB ? 'nginx, or bitnami/ to list bitnami\'s' : 'lscr.io/linuxserver/webtop';
+      repos = [];
+      listedNs = ns;
+      repoList.replaceChildren();
+      drawAbout();
+      repoSpinner.hidden = false;
+      try {
+        const res = await window.terminal.listRepos(host, ns);
+        if (at !== listing || !res) return;
+        if (res.error) say(res.error, true);
+        repos = res.repos;
+        repoList.replaceChildren(...repos.map((r) => option(r.name, r.description)));
+        drawAbout();
+      } finally {
+        if (at === listing) repoSpinner.hidden = true;
       }
-      const parts = value.split('/');
-      const name = parts.pop();
-      const pushed = parts.filter(Boolean);
-      const bad = pushed.find((c) => !COMPONENT.test(c));
-      if (bad) return say(`${bad} is not part of an image name: lowercase letters, digits, and . _ - between them.`, true);
-      imageInput.value = name;
-      if (!pushed.length) return drawImage();
-      crumbs.push(...pushed);
-      if (status.classList.contains('error')) say('');
-      drawCrumbs();
-      loadImages();
+    };
+    // The repository's tags for the Tag dropdown. A tag typed that it does not list
+    // gives way to the first it does, as there may be no latest.
+    const loadTags = async () => {
+      const at = ++tagging;
+      const repo = repoName();
+      tagList.replaceChildren();
+      drawAbout();
+      if (!repo) return;
+      tagSpinner.hidden = false;
+      try {
+        const res = await window.terminal.listTags(`${registrySelect.value}/${repo}`);
+        if (at !== tagging || !res) return;
+        if (res.error) say(res.error, true);
+        tagList.replaceChildren(...(res.tags.length ? res.tags : ['latest']).map((t) => option(t, '')));
+        if (res.tags.length && !res.tags.includes(tagInput.value.trim())) tagInput.value = res.tags[0];
+      } finally {
+        if (at === tagging) tagSpinner.hidden = true;
+      }
+    };
+    // The about line: the repository's description, when the registry gives one.
+    const drawAbout = () => {
+      about.textContent = repos.find((r) => r.name === repoInput.value.trim())?.description ?? '';
+    };
+    // A ":" typed in the repository sends what follows it to the tag; a Docker Hub
+    // namespace typed lists its repositories.
+    const repoTyped = () => {
+      const colon = repoInput.value.indexOf(':');
+      if (colon >= 0) {
+        tagInput.value = repoInput.value.slice(colon + 1) || 'latest';
+        repoInput.value = repoInput.value.slice(0, colon);
+      }
+      if (registrySelect.value === HUB && hubNs() !== listedNs) loadRepos();
+      else drawAbout();
     };
 
-    const drawPrefixes = () => {
-      const keep = prefixSelect.value;
-      prefixSelect.replaceChildren(...st.prefixes.map((p) => option(p)), option(NEW_PREFIX, 'Add prefix…'));
-      prefixSelect.value = st.prefixes.includes(keep) ? keep : st.prefixes[0] ?? NEW_PREFIX;
-      newPrefix.hidden = prefixSelect.value !== NEW_PREFIX;
-    };
     const drawMounts = () => {
       const dirs = st?.hostDirs ?? [];
       form.querySelector('[data-act="add-mount"]').disabled = !dirs.length;
@@ -985,18 +979,12 @@ async function main() {
       nsSelect.replaceChildren(...st.namespaces.map((n) => option(n)), option(NEW_NS, 'New namespace…'));
       nsSelect.value = pick ?? NEW_NS;
       newNs.hidden = nsSelect.value !== NEW_NS;
-      const prefixBefore = prefixSelect.value;
-      drawPrefixes();
       drawPods();
       drawMounts();
       drawHostDirs();
       drawJobHosts();
       drawJobs();
-      if (first || prefixSelect.value !== prefixBefore) {
-        crumbs = [];
-        drawCrumbs();
-        loadImages();
-      }
+      if (first) loadRepos();
       say(st.errors.join(' · '), st.errors.length > 0);
       if (!st.errors.length) sayDeleting();
     };
@@ -1054,26 +1042,15 @@ async function main() {
       drawPods();
       drawJobs();
     });
-    prefixSelect.addEventListener('change', () => {
-      newPrefix.hidden = prefixSelect.value !== NEW_PREFIX;
-      if (!newPrefix.hidden) {
-        form.elements.newPrefix.value = '';
-        form.elements.newPrefix.focus();
-      }
-      crumbs = [];
-      drawCrumbs();
-      loadImages();
+    // Leaving a dropdown changed lists what the next one offers.
+    registrySelect.addEventListener('change', () => {
+      repoInput.value = '';
+      loadRepos();
+      loadTags();
     });
-    imageInput.addEventListener('input', imageChanged);
+    repoInput.addEventListener('input', repoTyped);
+    repoInput.addEventListener('change', loadTags);
     hostDirInput.addEventListener('input', suggestHostSubdirs);
-    // Backspace in an empty name takes the last crumb back to edit.
-    imageInput.addEventListener('keydown', (e) => {
-      if (e.key !== 'Backspace' || imageInput.value || !crumbs.length) return;
-      e.preventDefault();
-      imageInput.value = crumbs.pop();
-      drawCrumbs();
-      loadImages();
-    });
     // Enter in a side input presses its button rather than creating a pod.
     form.addEventListener('keydown', (e) => {
       const act = e.key === 'Enter' && e.target.dataset?.enter;
@@ -1101,26 +1078,6 @@ async function main() {
         newNs.hidden = true;
         drawPods();
         say(`Created namespace ${name}.`);
-      }
-      if (act === 'add-prefix') {
-        const value = form.elements.newPrefix.value.trim().replace(/\/*$/, '/');
-        if (!(await preset('prefix', value, true))) return;
-        prefixSelect.value = value;
-        newPrefix.hidden = true;
-        crumbs = [];
-        drawCrumbs();
-        loadImages();
-        say(`Added ${value}.`);
-      }
-      if (act === 'cancel-prefix') {
-        prefixSelect.value = st?.prefixes[0] ?? NEW_PREFIX;
-        newPrefix.hidden = prefixSelect.value !== NEW_PREFIX;
-        loadImages();
-      }
-      if (act === 'remove-prefix') {
-        const value = prefixSelect.value;
-        if (value === NEW_PREFIX) return;
-        if (await preset('prefix', value, false)) say(`Took ${value} off the list.`);
       }
       if (act === 'add-mount') {
         mounts.push({ host: st?.hostDirs[0] ?? '', path: '' });
@@ -1151,32 +1108,30 @@ async function main() {
     form.addEventListener('submit', (e) => {
       e.preventDefault();
       const ns = nsSelect.value;
-      const name = imageInput.value.trim();
-      const tag = form.elements.tag.value.trim() || 'latest';
+      const repo = repoName();
+      const tag = tagInput.value.trim() || 'latest';
       const portText = form.elements.port.value.trim();
       const port = portText ? Number(portText) : null;
       const wanted = mounts.filter((m) => m.path);
       if (!ns || ns === NEW_NS) return say('Pick a namespace first.', true);
-      if (prefixSelect.value === NEW_PREFIX && !crumbs.length) return say('Pick where the image name starts, or type it in full, e.g. ghcr.io/org/app.', true);
-      if (!COMPONENT.test(name)) return say('Pick an image, e.g. webtop.', true);
+      if (!repo) return say('Pick a repository, e.g. lscr.io/linuxserver/webtop.', true);
       if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(tag)) return say('That is not an image tag.', true);
       if (port !== null && !(Number.isInteger(port) && port >= 1 && port <= 65535)) return say('The browser port is a number from 1 to 65535, or empty for none.', true);
       const bad = wanted.find((m) => !m.path.startsWith('/'));
       if (bad) return say(`A path in the pod starts with "/": ${bad.path}`, true);
-      const repo = prefix() + name;
       const sent = wanted.map((m) => ({ host: m.host, path: m.path }));
-      createPod({ namespace: ns, repo, tag, port, mounts: sent, gpu: form.elements.gpu.checked }, name);
+      createPod({ namespace: ns, repo: `${registrySelect.value}/${repo}`, tag, port, mounts: sent, gpu: form.elements.gpu.checked }, repo.split('/').at(-1));
     });
+    registrySelect.replaceChildren(...REGISTRIES.map((r) => option(r)));
     load();
 
     const p = {
       el,
       update: () => {},
       syncSize: () => {},
-      focus: () => (imageInput.value ? nsSelect : imageInput).focus(),
+      focus: () => (repoInput.value ? nsSelect : repoInput).focus(),
       dispose: () => {
         disposed = true;
-        clearTimeout(tagTimer);
         clearTimeout(jobTimer);
       },
     };

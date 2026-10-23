@@ -1,11 +1,15 @@
-// Image references for Kubernetes pods, and what a registry offers under a prefix, for
-// the New pane form's image breadcrumbs. A prefix is where the next part of a name
-// goes, ending in "/": "lscr.io/linuxserver/", "docker.io/bitnami/", "ghcr.io/org/".
+// Image references for Kubernetes pods, and the repositories and tags a registry
+// offers, for the New pane form's Registry, Repository and Tag dropdowns.
 //
-// What lies under a prefix comes from linuxserver's catalog for lscr.io/linuxserver/,
-// from Docker Hub's API for a Docker Hub namespace, and from the registry's own
-// /v2/_catalog otherwise, which most registries only answer when signed in. Whatever
-// cannot be listed comes back empty: the form then takes any name typed.
+// Repositories come from linuxserver's catalog for lscr.io, from Docker Hub's API for
+// Docker Hub, and from the registry's own /v2/_catalog otherwise, which most
+// registries only answer when signed in. Whatever cannot be listed comes back empty: the form then takes any name typed.
+
+const tls = require('tls');
+
+// Trust the system's CAs too, as curl and docker do: yes.ph's certificate comes from a
+// private CA installed there, which Node's bundled list does not have.
+tls.setDefaultCACertificates([...tls.getCACertificates('default'), ...tls.getCACertificates('system')]);
 
 const CATALOG_URL = 'https://api.linuxserver.io/api/v1/images';
 const TTL = 60 * 60 * 1000;
@@ -28,14 +32,6 @@ function splitRepo(repo) {
   return parts.length && parts.every(validComponent) ? { host: host.toLowerCase(), path: parts } : null;
 }
 const validRepo = (repo) => splitRepo(repo) !== null;
-
-// A prefix is a host, a repository path, or both, ending in "/".
-function validPrefix(prefix) {
-  if (typeof prefix !== 'string' || !prefix.endsWith('/') || prefix.length > 255) return false;
-  const parts = prefix.slice(0, -1).split('/');
-  if (HOST.test(parts[0])) parts.shift();
-  return parts.every(validComponent);
-}
 
 // "lscr.io/linuxserver/webtop:arch-kde" -> { repo: 'lscr.io/linuxserver/webtop', tag:
 // 'arch-kde', app: 'webtop' }; the tag is latest when there is none.
@@ -68,7 +64,7 @@ async function registryJson(host, apiPath) {
   try {
     return await getJson(url);
   } catch (err) {
-    const challenge = err.res?.status === 401 && err.res.headers.get('www-authenticate');
+    const challenge = err.res?.status === 401 ? err.res.headers.get('www-authenticate') : null;
     if (!challenge?.startsWith('Bearer ')) throw err;
     const params = Object.fromEntries([...challenge.matchAll(/(\w+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
     const tokenUrl = new URL(params.realm);
@@ -84,36 +80,28 @@ const linuxserver = () => cached(CATALOG_URL, async () => (await getJson(CATALOG
   .filter((i) => !i.deprecated && validComponent(i.name))
   .map((i) => ({ name: i.name, category: i.category ?? '', description: i.description ?? '', tags: (i.tags ?? []).map((t) => t.tag).filter(validTag) })));
 
-// What goes after prefix: [{ name, category, description, tags }], sorted by name. A
-// name ending in "/" goes further, a prefix of its own; tags is null when they are
-// listed separately (see tags).
-async function list(prefix) {
-  if (!validPrefix(prefix)) throw new Error(`bad image prefix: ${prefix}`);
-  const parts = prefix.slice(0, -1).split('/');
-  const host = HOST.test(parts[0]) ? parts.shift().toLowerCase() : 'docker.io';
-  const entry = (name, more = {}) => ({ name, category: '', description: '', tags: null, ...more });
+// The repositories a registry lists, by their names on it (no host): [{ name,
+// description }], sorted by name. lscr.io has no catalog of its own, so its come from
+// linuxserver's (linuxserver/webtop). Docker Hub has no catalog, only a namespace's
+// repositories (ns, e.g. "bitnami"), so without ns it lists the official images
+// (library's), by their bare names (nginx). Signed out, Hub only gives the first page
+// of 100, so this takes the first by name both ways: up to 200, all of library's 181.
+async function repositories(host, ns = '') {
+  if (typeof host !== 'string' || !HOST.test(host) || (ns && !validComponent(ns))) throw new Error(`bad registry: ${host}`);
+  host = host.toLowerCase();
   let found;
-  if (host === 'lscr.io' && parts.length === 1 && parts[0] === 'linuxserver') {
-    found = await linuxserver();
-  } else if (HUB_HOSTS.has(host) && parts.length === 1) {
-    const url = `https://hub.docker.com/v2/repositories/${parts[0]}/?page_size=100&ordering=last_updated`;
-    found = await cached(url, async () => (await getJson(url)).results
-      .filter((r) => validComponent(r.name))
-      .map((r) => entry(r.name, { description: r.description ?? '' })));
+  if (host === 'lscr.io') {
+    found = (await linuxserver()).map((i) => ({ name: `linuxserver/${i.name}`, description: `${i.category ? `${i.category}. ` : ''}${i.description.replace(/\[([^\]]*)\]/g, '$1')}` }));
   } else if (HUB_HOSTS.has(host)) {
-    found = []; // Docker Hub lists no namespaces, nor anything deeper than one
+    const base = `https://hub.docker.com/v2/repositories/${ns || 'library'}/?page_size=100&ordering=`;
+    found = await cached(base, async () => {
+      const pages = await Promise.all(['name', '-name'].map(async (o) => (await getJson(base + o)).results));
+      const byName = new Map(pages.flat().filter((r) => validComponent(r.name)).map((r) => [r.name, r]));
+      return [...byName.values()].map((r) => ({ name: ns ? `${ns}/${r.name}` : r.name, description: r.description ?? '' }));
+    });
   } else {
-    // The registry's whole catalog, cut to the next component under the prefix.
     const all = await cached(`${host}/_catalog`, async () => (await registryJson(host, '_catalog?n=1000')).repositories ?? []);
-    const under = parts.length ? `${parts.join('/')}/` : '';
-    const next = new Map();
-    for (const repo of all) {
-      if (!repo.startsWith(under)) continue;
-      const [first, ...rest] = repo.slice(under.length).split('/');
-      const name = rest.length ? `${first}/` : first;
-      if (validComponent(first)) next.set(name, entry(name));
-    }
-    found = [...next.values()];
+    found = all.filter((name) => splitRepo(`${host}/${name}`)).map((name) => ({ name, description: '' }));
   }
   return found.sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -134,4 +122,4 @@ async function tags(repo) {
   return cached(`${host}/${path.join('/')}/tags`, async () => ((await registryJson(host, `${path.join('/')}/tags/list`)).tags ?? []).filter(imageTag));
 }
 
-module.exports = { validComponent, validTag, validRepo, validPrefix, parseImage, list, tags };
+module.exports = { validComponent, validTag, validRepo, parseImage, repositories, tags };

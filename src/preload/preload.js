@@ -18,10 +18,10 @@ contextBridge.exposeInMainWorld('terminal', {
   // createPod and launch resolve with an error message, or null.
   launcherState: () => ipcRenderer.invoke('launcher:state'),
   createNamespace: (name) => ipcRenderer.invoke('launcher:namespace', name),
-  // The image breadcrumbs: what goes after a prefix ({ images, error }) and a
-  // repository's tags ({ tags, error }). setPreset adds or removes an image prefix
-  // (kind 'prefix') or a host directory ('hostDir'), resolving with an error or null.
-  listImages: (prefix) => ipcRenderer.invoke('launcher:images', prefix),
+  // The image dropdowns: a registry's repositories ({ repos, error }; ns is a Docker
+  // Hub namespace) and a repository's tags ({ tags, error }). setPreset adds or removes
+  // a host directory (kind 'hostDir'), resolving with an error or null.
+  listRepos: (host, ns) => ipcRenderer.invoke('launcher:repos', host, ns),
   listTags: (repo) => ipcRenderer.invoke('launcher:tags', repo),
   setPreset: (kind, value, on) => ipcRenderer.invoke('launcher:preset', kind, value, on),
   createPod: (wanted) => ipcRenderer.invoke('launcher:create-pod', wanted),
