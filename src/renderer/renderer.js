@@ -676,13 +676,16 @@ async function main() {
         <div class="row">
           <input name="newHostDir" list="launcher-host-dirs-${id}" data-enter="add-host-dir" placeholder="/srv/shared" autocomplete="off" spellcheck="false" title="Typing a / at the end lists that directory's subdirectories on the node">
           <datalist id="launcher-host-dirs-${id}"></datalist>
+          <i class="spinner inline host-dir-spinner" hidden title="Looking up subdirectories…"></i>
           <button type="button" data-act="add-host-dir" title="Offer this directory to new pods' mounts">Add</button>
         </div>
-        <h3>Chown job</h3>
-        <div class="row chown-job">
-          <select name="jobHost" title="The host directory to give, with everything in it, to the user and group"></select>
-          <input name="jobUid" type="number" min="0" step="1" class="id" data-enter="run-chown" title="User id">:<input name="jobGid" type="number" min="0" step="1" class="id" data-enter="run-chown" title="Group id">
-          <button type="button" data-act="run-chown" title="Run the job in the namespace: chown -R the directory to this user and group">▶</button>
+        <div class="chown-form">
+          <h3>Chown job</h3>
+          <div class="row chown-job">
+            <select name="jobHost" title="The host directory to give, with everything in it, to the user and group"></select>
+            <input name="jobUid" type="number" min="0" step="1" class="id" data-enter="run-chown" title="User id">:<input name="jobGid" type="number" min="0" step="1" class="id" data-enter="run-chown" title="Group id">
+            <button type="button" data-act="run-chown" title="Run the job in the namespace: chown -R the directory to this user and group">▶</button>
+          </div>
         </div>
         <ul class="jobs"></ul>
       </form>`;
@@ -700,6 +703,8 @@ async function main() {
     const hostDirList = el.querySelector('.host-dirs');
     const hostDirInput = form.elements.newHostDir;
     const hostDirSuggest = el.querySelector(`#launcher-host-dirs-${id}`);
+    const hostDirSpinner = el.querySelector('.host-dir-spinner');
+    const chownForm = el.querySelector('.chown-form');
     const jobList = el.querySelector('.jobs');
     const about = el.querySelector('.about');
     const status = el.querySelector('.status');
@@ -923,10 +928,15 @@ async function main() {
       const ns = nsSelect.value;
       if (!ns || ns === NEW_NS || !dir.startsWith('/')) return;
       const at = ++dirListing;
-      const { names, error } = await window.terminal.listHostSubdirs(ns, dir);
-      if (at !== dirListing || hostDirInput.value !== value) return;
-      if (error) return say(error, true);
-      hostDirSuggest.replaceChildren(...names.map((n) => option(`${dir === '/' ? '' : dir}/${n}`)));
+      hostDirSpinner.hidden = false;
+      try {
+        const { names, error } = await window.terminal.listHostSubdirs(ns, dir);
+        if (at !== dirListing) return;
+        if (error) return say(error, true);
+        if (hostDirInput.value === value) hostDirSuggest.replaceChildren(...names.map((n) => option(`${dir === '/' ? '' : dir}/${n}`)));
+      } finally {
+        if (at === dirListing) hostDirSpinner.hidden = true;
+      }
     };
 
     // The namespace's chown jobs: a spinner while one runs, and ✕ to delete it once it
@@ -969,6 +979,8 @@ async function main() {
       await loadJobs();
     };
     const drawJobHosts = () => {
+      chownForm.hidden = !st.hostDirs.length;
+      if (!st.hostDirs.length) return;
       const select = form.elements.jobHost;
       const keep = select.value;
       select.replaceChildren(...st.hostDirs.map((d) => option(d)));

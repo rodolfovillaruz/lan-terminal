@@ -271,6 +271,8 @@ html, body {
   animation: launcher-spin 0.8s linear infinite;
 }
 .launcher .spinner { margin-left: auto; margin-right: 8px; }
+.launcher .row .spinner.inline { margin: 0; }
+.launcher .spinner[hidden] { display: none; }
 .launcher .status.waiting::before { margin-right: 8px; }
 .launcher .pods li.deleting > :not(.spinner) { opacity: 0.4; }
 @keyframes launcher-spin { to { transform: rotate(360deg); } }
