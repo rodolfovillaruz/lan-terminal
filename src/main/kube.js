@@ -241,6 +241,71 @@ async function removeChownJob(bin, namespace, name) {
   return kubectl(bin, ['delete', 'job', name, '-n', namespace, '--cascade=foreground'], { timeout: 120000 });
 }
 
+// A scan job lists the immediate subdirectories of a directory on the node (such as
+// /srv), read-only, without a pod staying behind: a Job running from busybox, named
+// scan-<random>. Its pod's logs are the directory names, one per line.
+function scanJobSpec(namespace, dir) {
+  return {
+    apiVersion: 'batch/v1',
+    kind: 'Job',
+    metadata: {
+      generateName: 'scan-',
+      namespace,
+      labels: { 'app.kubernetes.io/managed-by': 'lan-terminal', 'app.kubernetes.io/name': 'scan' },
+    },
+    spec: {
+      backoffLimit: 0,
+      template: {
+        // Not labelled as the app's, so its pod does not list with the app's pods.
+        metadata: { labels: { 'app.kubernetes.io/name': 'scan' } },
+        spec: {
+          restartPolicy: 'Never',
+          containers: [{
+            name: 'scan',
+            image: CHOWN_IMAGE,
+            command: ['sh', '-c', 'for d in /mnt/*/; do [ -d "$d" ] && basename "$d"; done'],
+            volumeMounts: [{ name: 'host', mountPath: '/mnt', readOnly: true }],
+          }],
+          volumes: [{ name: 'host', hostPath: { path: dir, type: 'DirectoryOrCreate' } }],
+        },
+      },
+    },
+  };
+}
+
+// Polls a Job's conditions until it completes or fails, or timeoutMs passes: 'complete',
+// 'failed' or 'timeout'.
+async function waitJob(bin, namespace, name, timeoutMs = 30000) {
+  const start = Date.now();
+  for (;;) {
+    const out = await kubectl(bin, ['get', 'job', name, '-n', namespace, '-o', 'json']);
+    const conditions = JSON.parse(out).status.conditions ?? [];
+    const done = (type) => conditions.some((c) => c.type === type && c.status === 'True');
+    if (done('Complete')) return 'complete';
+    if (done('Failed')) return 'failed';
+    if (Date.now() - start >= timeoutMs) return 'timeout';
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
+// Runs a scan job over a directory on the node (such as /srv) and resolves with the
+// sorted names of its immediate subdirectories. The job and its pod are gone either way
+// by the time this resolves or throws.
+async function scanHostDir(bin, namespace, dir) {
+  if (!validName(namespace)) throw new Error(`bad namespace: ${namespace}`);
+  if (!validPath(dir)) throw new Error(`a directory is an absolute path: ${dir}`);
+  const created = await kubectl(bin, ['create', '-f', '-', '-o', 'name'], { input: JSON.stringify(scanJobSpec(namespace, dir)) });
+  const name = created.trim().split('/').pop();
+  try {
+    const state = await waitJob(bin, namespace, name);
+    if (state !== 'complete') throw new Error(`could not list ${dir} on the node (job ${state})`);
+    const out = await kubectl(bin, ['logs', `job/${name}`, '-n', namespace]);
+    return [...new Set(out.split('\n').map((s) => s.trim()).filter(Boolean))].sort();
+  } finally {
+    await kubectl(bin, ['delete', 'job', name, '-n', namespace, '--cascade=foreground'], { timeout: 120000 }).catch(() => {});
+  }
+}
+
 // Waits for the pod to be ready; pulling a desktop image the first time takes minutes.
 function waitReady(bin, namespace, name) {
   return kubectl(bin, ['wait', '--for=condition=Ready', `pod/${name}`, '-n', namespace, '--timeout=900s'], { timeout: 910000 });
@@ -266,4 +331,4 @@ function forward(bin, namespace, name, port) {
   });
 }
 
-module.exports = { DEFAULT_PORT, validName, validPort, validBrowserPort, validPath, checkMounts, namespaces, createNamespace, pods, podSpec, freeName, create, remove, chownJobSpec, createChownJob, chownJobs, removeChownJob, waitReady, forward };
+module.exports = { DEFAULT_PORT, validName, validPort, validBrowserPort, validPath, checkMounts, namespaces, createNamespace, pods, podSpec, freeName, create, remove, chownJobSpec, createChownJob, chownJobs, removeChownJob, scanJobSpec, scanHostDir, waitReady, forward };

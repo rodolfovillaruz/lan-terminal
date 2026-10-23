@@ -676,6 +676,7 @@ async function main() {
         <div class="row">
           <input name="newHostDir" data-enter="add-host-dir" placeholder="/srv/shared" autocomplete="off" spellcheck="false">
           <button type="button" data-act="add-host-dir" title="Offer this directory to new pods' mounts">Add</button>
+          <button type="button" data-act="scan-srv" title="Run a job in the namespace that lists /srv's subdirectories on the node and offers each as a host directory">Scan /srv</button>
         </div>
         <h3>Chown job</h3>
         <div class="row chown-job">
@@ -1129,6 +1130,15 @@ async function main() {
         if (!(await preset('hostDir', value, true))) return;
         form.elements.newHostDir.value = '';
         say(`Added ${value}; new pods can mount it.`);
+      }
+      if (act === 'scan-srv') {
+        const ns = nsSelect.value;
+        if (!ns || ns === NEW_NS) return say('Pick a namespace first.', true);
+        say('Scanning /srv on the node…', false, true);
+        const { added, error } = await window.terminal.scanHostDirs(ns, '/srv');
+        if (error) return say(error, true);
+        await load();
+        say(added.length ? `Added ${added.join(', ')} from /srv.` : 'No subdirectories found in /srv.');
       }
     });
     form.addEventListener('submit', (e) => {

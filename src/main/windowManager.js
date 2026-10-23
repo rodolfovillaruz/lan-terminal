@@ -440,6 +440,17 @@ class WindowManager extends EventEmitter {
         return err.message;
       }
     });
+    // Scans a directory on the node (dir, such as /srv) from the form: runs a job that
+    // lists its immediate subdirectories and offers each as a host directory. Answers
+    // { added, error }.
+    ipcMain.handle('launcher:scan-host-dirs', async (event, namespace, dir) => {
+      if (!this.#fromSender(event)) return { added: [], error: 'unknown window' };
+      try {
+        return { added: await this.scanHostDirs(namespace, dir), error: null };
+      } catch (err) {
+        return { added: [], error: err.message };
+      }
+    });
     ipcMain.handle('launcher:open', async (event, paneId, choice) => {
       const term = this.#fromSender(event);
       if (term?.panes.get(paneId)?.kind !== 'launcher') return 'the pane is no longer a new pane';
@@ -1323,6 +1334,16 @@ class WindowManager extends EventEmitter {
     if (!this.kubectl) throw new Error('kubectl is not installed');
     if (!this.#hostDirs().includes(host)) throw new Error(`${host} is not one of the host directories`);
     await kube.createChownJob(this.kubectl, namespace, host, uid, gid);
+  }
+
+  // Runs a job (see kube.scanHostDir) that lists dir's immediate subdirectories on the
+  // node and offers each as a host directory preset. Resolves with the paths added.
+  async scanHostDirs(namespace, dir) {
+    if (!this.kubectl) throw new Error('kubectl is not installed');
+    const names = await kube.scanHostDir(this.kubectl, namespace, dir);
+    const paths = names.map((n) => `${dir === '/' ? '' : dir}/${n}`);
+    for (const p of paths) this.setPreset('hostDir', p, true);
+    return paths;
   }
 
   async createNamespace(name) {
