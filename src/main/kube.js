@@ -241,33 +241,29 @@ async function removeChownJob(bin, namespace, name) {
   return kubectl(bin, ['delete', 'job', name, '-n', namespace, '--cascade=foreground'], { timeout: 120000 });
 }
 
-const MAX_SCAN_DEPTH = 20;
-const validDepth = (n) => Number.isInteger(n) && n >= 1 && n <= MAX_SCAN_DEPTH;
-
-// A scan job lists every subdirectory under a directory on the node (such as /srv), up
-// to maxDepth levels deep, read-only, without a pod staying behind: a Job running from
-// busybox, named scan-<random>. Its pod's logs are the subdirectories' paths relative
-// to dir, one per line, such as media and media/movies.
-function scanJobSpec(namespace, dir, maxDepth) {
+// A list-dir job lists the immediate subdirectories of a directory on the node (such
+// as /srv), read-only, without a pod staying behind: a Job running from busybox, named
+// list-dir-<random>. Its pod's logs are the subdirectories' names, one per line.
+function listDirJobSpec(namespace, dir) {
   return {
     apiVersion: 'batch/v1',
     kind: 'Job',
     metadata: {
-      generateName: 'scan-',
+      generateName: 'list-dir-',
       namespace,
-      labels: { 'app.kubernetes.io/managed-by': 'lan-terminal', 'app.kubernetes.io/name': 'scan' },
+      labels: { 'app.kubernetes.io/managed-by': 'lan-terminal', 'app.kubernetes.io/name': 'list-dir' },
     },
     spec: {
       backoffLimit: 0,
       template: {
         // Not labelled as the app's, so its pod does not list with the app's pods.
-        metadata: { labels: { 'app.kubernetes.io/name': 'scan' } },
+        metadata: { labels: { 'app.kubernetes.io/name': 'list-dir' } },
         spec: {
           restartPolicy: 'Never',
           containers: [{
-            name: 'scan',
+            name: 'list-dir',
             image: CHOWN_IMAGE,
-            command: ['sh', '-c', `cd /mnt && find . -mindepth 1 -maxdepth ${maxDepth} -type d | cut -c3-`],
+            command: ['sh', '-c', 'cd /mnt && find . -mindepth 1 -maxdepth 1 -type d | cut -c3-'],
             volumeMounts: [{ name: 'host', mountPath: '/mnt', readOnly: true }],
           }],
           volumes: [{ name: 'host', hostPath: { path: dir, type: 'DirectoryOrCreate' } }],
@@ -292,15 +288,13 @@ async function waitJob(bin, namespace, name, timeoutMs = 30000) {
   }
 }
 
-// Runs a scan job over a directory on the node (such as /srv) and resolves with the
-// sorted paths of every subdirectory under it, up to maxDepth levels deep, relative to
-// dir (such as media and media/movies). The job and its pod are gone either way by the
-// time this resolves or throws.
-async function scanHostDir(bin, namespace, dir, maxDepth) {
+// Runs a list-dir job over a directory on the node (such as /srv) and resolves with
+// the sorted names of its immediate subdirectories. The job and its pod are gone either
+// way by the time this resolves or throws.
+async function listSubdirs(bin, namespace, dir) {
   if (!validName(namespace)) throw new Error(`bad namespace: ${namespace}`);
   if (!validPath(dir)) throw new Error(`a directory is an absolute path: ${dir}`);
-  if (!validDepth(maxDepth)) throw new Error(`levels deep is a whole number from 1 to ${MAX_SCAN_DEPTH}`);
-  const created = await kubectl(bin, ['create', '-f', '-', '-o', 'name'], { input: JSON.stringify(scanJobSpec(namespace, dir, maxDepth)) });
+  const created = await kubectl(bin, ['create', '-f', '-', '-o', 'name'], { input: JSON.stringify(listDirJobSpec(namespace, dir)) });
   const name = created.trim().split('/').pop();
   try {
     const state = await waitJob(bin, namespace, name);
@@ -337,4 +331,4 @@ function forward(bin, namespace, name, port) {
   });
 }
 
-module.exports = { DEFAULT_PORT, validName, validPort, validBrowserPort, validPath, checkMounts, namespaces, createNamespace, pods, podSpec, freeName, create, remove, chownJobSpec, createChownJob, chownJobs, removeChownJob, scanJobSpec, scanHostDir, waitReady, forward };
+module.exports = { DEFAULT_PORT, validName, validPort, validBrowserPort, validPath, checkMounts, namespaces, createNamespace, pods, podSpec, freeName, create, remove, chownJobSpec, createChownJob, chownJobs, removeChownJob, listDirJobSpec, listSubdirs, waitReady, forward };

@@ -674,13 +674,9 @@ async function main() {
         <h3>Host directories</h3>
         <ul class="host-dirs"></ul>
         <div class="row">
-          <input name="newHostDir" data-enter="add-host-dir" placeholder="/srv/shared" autocomplete="off" spellcheck="false">
+          <input name="newHostDir" list="launcher-host-dirs-${id}" data-enter="add-host-dir" placeholder="/srv/shared" autocomplete="off" spellcheck="false" title="Typing a / at the end lists that directory's subdirectories on the node">
+          <datalist id="launcher-host-dirs-${id}"></datalist>
           <button type="button" data-act="add-host-dir" title="Offer this directory to new pods' mounts">Add</button>
-          <button type="button" data-act="clear-host-dirs" title="Take every host directory off the list">Clear all</button>
-        </div>
-        <div class="row">
-          <label title="How many levels of subdirectories under /srv to list">Levels deep <input name="scanDepth" type="number" min="1" max="20" step="1" value="3" data-enter="scan-srv"></label>
-          <button type="button" data-act="scan-srv" title="Run a job in the namespace that lists /srv's subdirectories on the node, this many levels deep, and offers each as a host directory">Scan /srv</button>
         </div>
         <h3>Chown job</h3>
         <div class="row chown-job">
@@ -702,6 +698,8 @@ async function main() {
     const tagList = el.querySelector(`#launcher-tags-${id}`);
     const mountList = el.querySelector('.mounts');
     const hostDirList = el.querySelector('.host-dirs');
+    const hostDirInput = form.elements.newHostDir;
+    const hostDirSuggest = el.querySelector(`#launcher-host-dirs-${id}`);
     const jobList = el.querySelector('.jobs');
     const about = el.querySelector('.about');
     const status = el.querySelector('.status');
@@ -720,6 +718,7 @@ async function main() {
     let listing = 0; // the latest listImages and listTags, so older answers are dropped
     let tagging = 0;
     let tagTimer = null;
+    let dirListing = 0; // the latest listHostSubdirs, so older answers are dropped
     const mounts = []; // the new pod's [{ host, path }]
     const deletingJobs = new Set(); // the chown jobs being deleted, as 'namespace/name'
     let jobTimer = null;
@@ -913,7 +912,21 @@ async function main() {
         return li;
       }));
       if (!st.hostDirs.length) hostDirList.append(Object.assign(document.createElement('li'), { className: 'none', textContent: 'None yet.' }));
-      form.querySelector('[data-act="clear-host-dirs"]').disabled = !st.hostDirs.length;
+    };
+
+    // Suggests a directory's immediate subdirectories on the node once the input ends
+    // in "/", by running a job in the current namespace (see launcher:list-host-subdirs).
+    const suggestHostSubdirs = async () => {
+      const value = hostDirInput.value;
+      if (!value.endsWith('/')) return;
+      const dir = value.length > 1 ? value.replace(/\/+$/, '') : '/';
+      const ns = nsSelect.value;
+      if (!ns || ns === NEW_NS || !dir.startsWith('/')) return;
+      const at = ++dirListing;
+      const { names, error } = await window.terminal.listHostSubdirs(ns, dir);
+      if (at !== dirListing || hostDirInput.value !== value) return;
+      if (error) return say(error, true);
+      hostDirSuggest.replaceChildren(...names.map((n) => option(`${dir === '/' ? '' : dir}/${n}`)));
     };
 
     // The namespace's chown jobs: a spinner while one runs, and ✕ to delete it once it
@@ -1055,6 +1068,7 @@ async function main() {
       loadImages();
     });
     imageInput.addEventListener('input', imageChanged);
+    hostDirInput.addEventListener('input', suggestHostSubdirs);
     // Backspace in an empty name takes the last crumb back to edit.
     imageInput.addEventListener('keydown', (e) => {
       if (e.key !== 'Backspace' || imageInput.value || !crumbs.length) return;
@@ -1135,23 +1149,6 @@ async function main() {
         if (!(await preset('hostDir', value, true))) return;
         form.elements.newHostDir.value = '';
         say(`Added ${value}; new pods can mount it.`);
-      }
-      if (act === 'clear-host-dirs') {
-        if (!st?.hostDirs.length) return;
-        await window.terminal.clearHostDirs();
-        await load();
-        say('Cleared the host directories.');
-      }
-      if (act === 'scan-srv') {
-        const ns = nsSelect.value;
-        const depth = form.elements.scanDepth.value.trim();
-        if (!ns || ns === NEW_NS) return say('Pick a namespace first.', true);
-        if (!(/^\d+$/.test(depth) && Number(depth) >= 1 && Number(depth) <= 20)) return say('Levels deep is a whole number from 1 to 20.', true);
-        say('Scanning /srv on the node…', false, true);
-        const { added, error } = await window.terminal.scanHostDirs(ns, '/srv', Number(depth));
-        if (error) return say(error, true);
-        await load();
-        say(added.length ? `Added ${added.join(', ')} from /srv.` : 'No subdirectories found in /srv.');
       }
     });
     form.addEventListener('submit', (e) => {

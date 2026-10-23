@@ -366,12 +366,6 @@ class WindowManager extends EventEmitter {
         return err.message;
       }
     });
-    // Clears every host directory preset from the form.
-    ipcMain.handle('launcher:clear-host-dirs', (event) => {
-      if (!this.#fromSender(event)) return 'unknown window';
-      this.clearHostDirs();
-      return null;
-    });
     ipcMain.handle('launcher:namespace', async (event, name) => {
       if (!this.#fromSender(event)) return null;
       try {
@@ -446,15 +440,15 @@ class WindowManager extends EventEmitter {
         return err.message;
       }
     });
-    // Scans a directory on the node (dir, such as /srv) from the form: runs a job that
-    // lists every subdirectory under it, up to maxDepth levels deep, and offers each as
-    // a host directory. Answers { added, error }.
-    ipcMain.handle('launcher:scan-host-dirs', async (event, namespace, dir, maxDepth) => {
-      if (!this.#fromSender(event)) return { added: [], error: 'unknown window' };
+    // Lists a directory's immediate subdirectories on the node (dir, such as /srv or a
+    // path the host directory input ends at a "/" with), for it to suggest. Answers
+    // { names, error }.
+    ipcMain.handle('launcher:list-host-subdirs', async (event, namespace, dir) => {
+      if (!this.#fromSender(event)) return { names: [], error: 'unknown window' };
       try {
-        return { added: await this.scanHostDirs(namespace, dir, maxDepth), error: null };
+        return { names: await this.listHostSubdirs(namespace, dir), error: null };
       } catch (err) {
-        return { added: [], error: err.message };
+        return { names: [], error: err.message };
       }
     });
     ipcMain.handle('launcher:open', async (event, paneId, choice) => {
@@ -1304,12 +1298,6 @@ class WindowManager extends EventEmitter {
     saveConfig(this.config);
   }
 
-  // Takes every host directory off the list. Leaves the pods that mount them alone.
-  clearHostDirs() {
-    this.config.hostDirs = [];
-    saveConfig(this.config);
-  }
-
   // What a launcher pane's form offers: the namespaces, the one to start on (where the
   // last new pod went, while it exists), the app's pods and chown jobs, and the presets: image
   // prefixes, host directories and the user and group a mount's chown starts on.
@@ -1348,15 +1336,12 @@ class WindowManager extends EventEmitter {
     await kube.createChownJob(this.kubectl, namespace, host, uid, gid);
   }
 
-  // Runs a job (see kube.scanHostDir) that lists every subdirectory under dir on the
-  // node, up to maxDepth levels deep, and offers each as a host directory preset.
-  // Resolves with the paths added.
-  async scanHostDirs(namespace, dir, maxDepth = 3) {
+  // Runs a job (see kube.listSubdirs) that lists dir's immediate subdirectories on the
+  // node, for the host directory input to suggest as the user types a path ending in
+  // "/". Resolves with their names.
+  async listHostSubdirs(namespace, dir) {
     if (!this.kubectl) throw new Error('kubectl is not installed');
-    const names = await kube.scanHostDir(this.kubectl, namespace, dir, maxDepth);
-    const paths = names.map((n) => `${dir === '/' ? '' : dir}/${n}`);
-    for (const p of paths) this.setPreset('hostDir', p, true);
-    return paths;
+    return kube.listSubdirs(this.kubectl, namespace, dir);
   }
 
   async createNamespace(name) {

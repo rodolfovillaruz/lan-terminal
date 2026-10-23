@@ -24,17 +24,16 @@ contextBridge.exposeInMainWorld('terminal', {
   listImages: (prefix) => ipcRenderer.invoke('launcher:images', prefix),
   listTags: (repo) => ipcRenderer.invoke('launcher:tags', repo),
   setPreset: (kind, value, on) => ipcRenderer.invoke('launcher:preset', kind, value, on),
-  clearHostDirs: () => ipcRenderer.invoke('launcher:clear-host-dirs'),
   createPod: (wanted) => ipcRenderer.invoke('launcher:create-pod', wanted),
   launch: (paneId, choice) => ipcRenderer.invoke('launcher:open', paneId, choice),
   // Chown jobs: listing ({ jobs, error }), and making or deleting one (an error or null).
   chownJobs: () => ipcRenderer.invoke('launcher:chown-jobs'),
   createChownJob: (namespace, host, uid, gid) => ipcRenderer.invoke('launcher:create-chown-job', namespace, host, uid, gid),
   deleteChownJob: (namespace, name) => ipcRenderer.invoke('launcher:delete-chown-job', namespace, name),
-  // Runs a job that lists every subdirectory under dir (e.g. /srv) on the node, up to
-  // maxDepth levels deep, and offers each as a host directory. Resolves with
-  // { added, error }.
-  scanHostDirs: (namespace, dir, maxDepth) => ipcRenderer.invoke('launcher:scan-host-dirs', namespace, dir, maxDepth),
+  // Lists dir's (e.g. /srv) immediate subdirectories on the node, for the host
+  // directory input to suggest as the user types a path ending in "/". Resolves with
+  // { names, error }.
+  listHostSubdirs: (namespace, dir) => ipcRenderer.invoke('launcher:list-host-subdirs', namespace, dir),
   // true when the dialog says yes; then deletePod answers null, or an error message.
   confirmDeletePod: (namespace, pod) => ipcRenderer.invoke('launcher:confirm-delete-pod', namespace, pod),
   deletePod: (namespace, pod) => ipcRenderer.invoke('launcher:delete-pod', namespace, pod),
